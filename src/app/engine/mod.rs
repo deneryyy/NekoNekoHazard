@@ -2,17 +2,13 @@ pub mod input;
 pub mod renderer;
 pub mod resources;
 
-use std::{
-    sync::{Arc},
-    thread,
-    time::Instant,
-};
+use std::{sync::Arc, thread, time::Instant};
 
 use anyhow::{Ok, Result};
 use winit::{
     event::{DeviceEvent, ElementState, KeyEvent, WindowEvent},
     event_loop::ActiveEventLoop,
-    keyboard::PhysicalKey,
+    keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
 
@@ -20,10 +16,12 @@ use crate::app::{
     engine::{
         input::InputManager,
         renderer::{Renderer, context::RenderingContext},
-    }, game::{Game, world::World},
+    },
+    game::{Game, world::World},
 };
 
 pub struct Engine {
+    hide_cursor: bool,
     last_frame: Instant,
     world: Arc<World>,
     input_manager: Arc<InputManager>,
@@ -48,6 +46,7 @@ impl Engine {
         let context = Arc::new(RenderingContext::new(window.clone())?);
         let renderer = Renderer::new(context.clone(), window.clone(), world.clone())?;
         Ok(Self {
+            hide_cursor: true,
             last_frame: Instant::now(),
             world,
             input_manager,
@@ -64,24 +63,46 @@ impl Engine {
         event: winit::event::DeviceEvent,
     ) {
         match event {
-            DeviceEvent::MouseMotion { delta } => {
-                self.world
-                    .player
-                    .write()
-                    .camera
-                    .process_mouse_movement(delta.0 as f32, delta.1 as f32);
+            DeviceEvent::MouseMotion { delta } if !self.renderer.egui_renderer.wants_pointer() => {
+                if self.hide_cursor {
+                    self.world
+                        .player
+                        .write()
+                        .camera
+                        .process_mouse_movement(delta.0 as f32, delta.1 as f32);
+                }
             }
-            DeviceEvent::Key(event) => match event.physical_key {
-                PhysicalKey::Code(code) => match event.state {
-                    ElementState::Pressed => {
-                        self.input_manager.pressed_keys.write().insert(code);
-                    }
-                    ElementState::Released => {
-                        self.input_manager.pressed_keys.write().remove(&code);
-                    }
-                },
-                _ => {}
-            },
+            DeviceEvent::Key(event) if !self.renderer.egui_renderer.wants_keyboard() => {
+                match event.physical_key {
+                    PhysicalKey::Code(code) => match event.state {
+                        ElementState::Pressed => {
+                            if code == KeyCode::KeyE {
+                                if self.hide_cursor {
+                                    self.window.set_cursor_visible(true);
+                                    self.window
+                                        .set_cursor_grab(winit::window::CursorGrabMode::None)
+                                        .unwrap();
+                                    self.hide_cursor = false;
+                                } else {
+                                    self.window.set_cursor_visible(false);
+                                    self.window
+                                        .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                        .unwrap();
+                                    self.hide_cursor = true;
+                                }
+                            }
+
+                            if self.hide_cursor {
+                                self.input_manager.pressed_keys.write().insert(code);
+                            }
+                        }
+                        ElementState::Released => {
+                            self.input_manager.pressed_keys.write().remove(&code);
+                        }
+                    },
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -92,6 +113,7 @@ impl Engine {
         window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
+        let consumed = self.renderer.egui_renderer.on_window_event(&event);
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();

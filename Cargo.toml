@@ -20,6 +20,9 @@ parking_lot = "0.12.5"
 shaderc = "0.10.1"
 gltf = {version = "1.4.1", features = ["extras", "names", "import"]}
 bevy_ecs = "0.20.0"
+egui = "0.36.2"
+egui-ash-renderer = { version = "0.13.0", features = ["gpu-allocator"] }
+egui-winit = "0.36.2"
 
 [build-dependencies]
 anyhow = "1.0"

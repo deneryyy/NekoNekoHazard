@@ -2,6 +2,7 @@ pub mod camera;
 pub mod character_renderer;
 pub mod context;
 pub mod descriptor;
+pub mod egui_renderer;
 pub mod model;
 pub mod staging;
 pub mod swapchain;
@@ -20,6 +21,7 @@ use crate::app::{
         character_renderer::CharacterRenderer,
         context::{AllocatedBuffer, RenderingContext},
         descriptor::{DescriptorAllocator, DescriptorLayoutBuilder, PoolSizeRatio},
+        egui_renderer::EguiRenderer,
         model::Model,
         staging::RingStagingBuffer,
         swapchain::Swapchain,
@@ -46,6 +48,7 @@ struct UniformBufferObject {
 }
 
 pub struct Renderer {
+    pub egui_renderer: EguiRenderer,
     character_renderer: CharacterRenderer,
     texture_descriptors: vk::DescriptorSet,
     texture_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -241,7 +244,9 @@ impl Renderer {
                 .iter()
                 .map(|frame| return frame.character_descriptor_layout)
                 .collect::<Vec<_>>();
+            let egui_renderer = EguiRenderer::new(window.clone(), context.clone(), &swapchain)?;
             Ok(Self {
+                egui_renderer,
                 character_renderer: CharacterRenderer::new(
                     context.clone(),
                     allocator.clone(),
@@ -407,6 +412,12 @@ impl Renderer {
                 &self.swapchain,
                 self.texture_descriptors,
             );
+
+            self.egui_renderer.record_commands(
+                frame,
+                extent,
+                self.context.queues[self.context.queue_families.graphics as usize],
+            )?;
 
             if self.context.use_dynamic_rendering {
                 self.context.device.cmd_end_rendering(frame.command_buffer);

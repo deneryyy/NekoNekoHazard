@@ -1,7 +1,5 @@
 mod app;
 
-use core::fmt;
-
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 use winit::event_loop::{ControlFlow, EventLoop};
