@@ -1,5 +1,13 @@
 use ash::vk;
 
+struct ResourceLoader {
+
+}
+
+impl ResourceLoader {
+
+}
+
 pub fn load_string(file_name: &str) -> anyhow::Result<String> {
     let txt = {
         let path = std::path::Path::new(env!("OUT_DIR"))

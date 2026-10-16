@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Ok, Result};
 use ash::vk::{
-    self, BufferCreateInfo, CommandBufferUsageFlags, ImageSubresourceLayers,
+    self, BufferCreateInfo, CommandBufferUsageFlags,
     PipelineDepthStencilStateCreateInfo, RenderingAttachmentInfo,
 };
 use gpu_allocator::{
@@ -14,8 +14,6 @@ use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
-
-use crate::app::engine::renderer::model::ModelVertex;
 
 #[derive(Clone)]
 pub struct QueueFamily {
@@ -554,7 +552,7 @@ impl RenderingContext {
         }
     }
 
-    pub fn create_graphics_pipeline(
+    pub fn create_graphics_pipeline<'a>(
         &self,
         swapchain_extent: vk::Extent2D,
         swapchain_format: vk::Format,
@@ -564,45 +562,11 @@ impl RenderingContext {
         pipeline_layout: vk::PipelineLayout,
         pipeline_cache: vk::PipelineCache,
         render_pass: Option<vk::RenderPass>,
+        vertex_input_state: vk::PipelineVertexInputStateCreateInfo<'a>,
     ) -> Result<vk::Pipeline> {
         let entry_point = std::ffi::CString::new("main")?;
 
-        let binding_descriptions = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<ModelVertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)];
-
-        let attribute_descriptions = [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, uv1) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(2)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, normal) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(3)
-                .format(vk::Format::R32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, uv2) as u32),
-        ];
-
-        let vertex_input_state = if self.use_buffer_device_address {
-            vk::PipelineVertexInputStateCreateInfo::default()
-        } else {
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&binding_descriptions)
-                .vertex_attribute_descriptions(&attribute_descriptions)
-        };
-
+        
         unsafe {
             Ok(self
                 .device

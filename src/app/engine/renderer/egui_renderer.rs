@@ -7,11 +7,13 @@ use egui_ash_renderer::{DynamicRendering, Options, RenderMode, Renderer, allocat
 use egui_winit::State;
 use winit::{event::WindowEvent, window::Window};
 
-use crate::app::engine::renderer::{self, Frame, context::RenderingContext, swapchain::Swapchain};
+use crate::app::engine::renderer::{
+    self, Frame, ToonParamsUniformBufferObject, context::RenderingContext, swapchain::Swapchain,
+};
 
 pub struct EguiRenderer {
-    age: u32,
-    name: String,
+    pub light_pos: glam::Vec3,
+    pub toon_params: ToonParamsUniformBufferObject,
     show_settings: bool,
     textures_to_free: HashSet<TextureId>,
     pub egui_ctx: Context,
@@ -70,8 +72,25 @@ impl EguiRenderer {
         };
 
         Ok(Self {
-            age: 19,
-            name: "Alan".to_string(),
+            light_pos: glam::Vec3 {
+                x: 20.0,
+                y: 20.0,
+                z: 20.0,
+            },
+            toon_params: ToonParamsUniformBufferObject {
+                shadow_tint: glam::Vec4::from_array([0.6, 0.55, 0.8, 1.0]),
+                light_color: glam::Vec4::from_array([1.0, 1.0, 1.0, 0.1]),
+                step_threshold: 0.5,
+                step_softness: 0.03,
+                rim_power: 4.0,
+                rim_strength: 0.4,
+                rim_edge_0: 0.6,
+                rim_edge_1: 0.8,
+                spec_threshold: 0.5,
+                shininess: 32.0,
+                spec_strength: 0.3,
+                _pad: 0.0,
+            },
             show_settings: true,
             textures_to_free: HashSet::new(),
             egui_ctx,
@@ -88,7 +107,7 @@ impl EguiRenderer {
         queue: vk::Queue,
     ) -> Result<()> {
         for id in self.textures_to_free.drain() {
-            self.renderer.free_texture(id);
+            self.renderer.free_texture(id)?;
         }
 
         let raw_input = self.egui_winit.take_egui_input(&self.window);
@@ -109,17 +128,26 @@ impl EguiRenderer {
                 .resizable(true)
                 .collapsible(true)
                 .show(&ctx, |ui| {
-                    ui.heading("My egui Application");
-                    ui.horizontal(|ui| {
-                        let name_label = ui.label("Your name: ");
-                        ui.text_edit_singleline(&mut self.name)
-                            .labelled_by(name_label.id);
-                    });
-                    ui.add(egui::Slider::new(&mut self.age, 0..=120).text("age"));
-                    if ui.button("Increment").clicked() {
-                        self.age += 1;
-                    }
-                    ui.label(format!("Hello '{}', age {}", self.name, self.age));
+                    ui.heading("Nekohazard Debug");
+                    ui.add(egui::DragValue::new(&mut self.light_pos.x).prefix("light pos x: "));
+                    ui.add(egui::DragValue::new(&mut self.light_pos.y).prefix("light pos y: "));
+                    ui.add(egui::DragValue::new(&mut self.light_pos.z).prefix("light pos z: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.shadow_tint.x).prefix("shadow tint r: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.shadow_tint.y).prefix("shadow tint g: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.shadow_tint.z).prefix("shadow tint b: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.x).prefix("light color r: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.y).prefix("light color b: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.z).prefix("light color g: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.w).prefix("light color a: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.step_threshold).prefix("step threshold: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.step_softness).prefix("step softness: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_power).prefix("rim power: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_strength).prefix("rim strength: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_edge_0).prefix("rim edge 0: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_edge_1).prefix("rim edge 1: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.spec_threshold).prefix("spec threshold: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.shininess).prefix("shininess: "));
+                    ui.add(egui::DragValue::new(&mut self.toon_params.spec_strength).prefix("spec strength: "));
                 });
         });
 

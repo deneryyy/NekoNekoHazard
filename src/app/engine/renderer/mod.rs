@@ -11,6 +11,7 @@ pub mod texture;
 use std::{sync::Arc, u32};
 
 use anyhow::{Ok, Result};
+use tracing::info;
 use glam::Mat4;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use parking_lot::Mutex;
@@ -34,7 +35,8 @@ use ash::vk::{self, CommandBufferUsageFlags};
 pub struct Frame {
     character_descriptors: vk::DescriptorSet,
     character_descriptor_layout: vk::DescriptorSetLayout,
-    uniform_buffer: AllocatedBuffer,
+    toon_params_uniform_buffer: AllocatedBuffer,
+    frame_uniform_buffer: AllocatedBuffer,
     in_flight_fence: vk::Fence,
     image_available_semaphore: vk::Semaphore,
     command_buffer: vk::CommandBuffer,
@@ -42,9 +44,27 @@ pub struct Frame {
 }
 
 #[repr(C)]
-struct UniformBufferObject {
+struct FrameUniformBufferObject {
     view: glam::Mat4,
     proj: glam::Mat4,
+    light_pos: glam::Vec4,
+    cam_pos: glam::Vec4,
+}
+
+#[repr(C)]
+struct ToonParamsUniformBufferObject {
+    shadow_tint: glam::Vec4,
+    light_color: glam::Vec4,
+    step_threshold: f32,
+    step_softness: f32,
+    rim_power: f32,
+    rim_strength: f32,
+    rim_edge_0: f32,
+    rim_edge_1: f32,
+    spec_threshold: f32,
+    shininess: f32,
+    spec_strength: f32,
+    _pad: f32,
 }
 
 pub struct Renderer {
@@ -103,7 +123,7 @@ impl Renderer {
         let sizes = Vec::from([
             PoolSizeRatio {
                 desc_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ratio: 2,
+                ratio: 4,
             },
             PoolSizeRatio {
                 desc_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -162,6 +182,7 @@ impl Renderer {
             }
 
             let mut frames: Vec<Frame> = Vec::with_capacity(FRAME_OVERLAP);
+
             for _ in 0..FRAME_OVERLAP {
                 let image_available_semaphore = context
                     .device
@@ -189,19 +210,35 @@ impl Renderer {
                     .next()
                     .unwrap();
 
-                let uniform_buffer = context.create_buffer(
-                    "Uniform buffer",
+                let frame_uniform_buffer = context.create_buffer(
+                    "Uniform Buffer",
                     &mut allocator.lock(),
-                    std::mem::size_of::<UniformBufferObject>() as u64,
+                    std::mem::size_of::<FrameUniformBufferObject>() as u64,
                     vk::BufferUsageFlags::UNIFORM_BUFFER,
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
+
+                let toon_params_uniform_buffer = context.create_buffer(
+                    "Toon Params Uniform Buffer",
+                    &mut allocator.lock(),
+                    std::mem::size_of::<ToonParamsUniformBufferObject>() as u64,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    gpu_allocator::MemoryLocation::CpuToGpu,
+                )?;
+
                 let mut character_descriptor_layout_builder = DescriptorLayoutBuilder::new();
                 character_descriptor_layout_builder.add_binding(
                     0,
                     vk::DescriptorType::UNIFORM_BUFFER,
                     1,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    vk::DescriptorBindingFlags::empty(),
+                );
+                character_descriptor_layout_builder.add_binding(
+                    1,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    1,
+                    vk::ShaderStageFlags::FRAGMENT,
                     vk::DescriptorBindingFlags::empty(),
                 );
 
@@ -215,8 +252,8 @@ impl Renderer {
                 )?;
                 let mut desc_writes: Vec<vk::WriteDescriptorSet> = Vec::new();
                 let uniform_desc_info = &[vk::DescriptorBufferInfo::default()
-                    .buffer(uniform_buffer.buffer)
-                    .range(std::mem::size_of::<UniformBufferObject>() as u64)];
+                    .buffer(frame_uniform_buffer.buffer)
+                    .range(std::mem::size_of::<FrameUniformBufferObject>() as u64)];
                 desc_writes.push(
                     vk::WriteDescriptorSet::default()
                         .dst_binding(0)
@@ -225,14 +262,25 @@ impl Renderer {
                         .descriptor_count(1)
                         .buffer_info(uniform_desc_info),
                 );
-
+                let toon_params_desc_info = &[vk::DescriptorBufferInfo::default()
+                    .buffer(toon_params_uniform_buffer.buffer)
+                    .range(std::mem::size_of::<ToonParamsUniformBufferObject>() as u64)];
+                desc_writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_binding(1)
+                        .dst_set(character_descriptors)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .buffer_info(toon_params_desc_info),
+                );
                 desc_writes.push(tex_write);
                 context.device.update_descriptor_sets(&desc_writes, &[]);
 
                 frames.push(Frame {
                     character_descriptors,
                     character_descriptor_layout,
-                    uniform_buffer,
+                    toon_params_uniform_buffer,
+                    frame_uniform_buffer,
                     image_available_semaphore,
                     in_flight_fence,
                     command_buffer,
@@ -280,7 +328,13 @@ impl Renderer {
         self.swapchain.resize()
     }
 
-    fn upload_uniform_buffer(world: Arc<World>, swapchain: &Swapchain, frame: &Frame) {
+    fn upload_uniform_buffer(
+        world: Arc<World>,
+        swapchain: &Swapchain,
+        frame: &Frame,
+        light_pos: glam::Vec3,
+        toon_ubo: &ToonParamsUniformBufferObject,
+    ) {
         unsafe {
             let player = world.player.read();
             let mut proj = glam::Mat4::perspective_rh(
@@ -292,20 +346,29 @@ impl Renderer {
             );
             proj.y_axis.y *= -1.0;
 
-            let view = player.camera.get_view_matrix()
-                * glam::Mat4::from_scale(glam::Vec3 {
-                    x: 10.0,
-                    y: 10.0,
-                    z: 10.0,
-                });
-            let ubo = UniformBufferObject { view, proj };
+            let view = player.camera.get_view_matrix();
+
+            let ubo = FrameUniformBufferObject {
+                view,
+                proj,
+                light_pos: light_pos.extend(0.0),
+                cam_pos: player.camera.position.extend(0.0),
+            };
             let ubo_ptr = frame
-                .uniform_buffer
+                .frame_uniform_buffer
                 .allocation
                 .mapped_ptr()
                 .unwrap()
                 .as_ptr();
             std::ptr::copy_nonoverlapping(&ubo, ubo_ptr.cast(), 1);
+
+            let toon_ubo_ptr = frame
+                .toon_params_uniform_buffer
+                .allocation
+                .mapped_ptr()
+                .unwrap()
+                .as_ptr();
+            std::ptr::copy_nonoverlapping(toon_ubo, toon_ubo_ptr.cast(), 1);
         }
     }
 
@@ -347,7 +410,13 @@ impl Renderer {
                     .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            Self::upload_uniform_buffer(self.world.clone(), &self.swapchain, frame);
+            Self::upload_uniform_buffer(
+                self.world.clone(),
+                &self.swapchain,
+                frame,
+                self.egui_renderer.light_pos,
+                &self.egui_renderer.toon_params,
+            );
 
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -545,8 +614,12 @@ impl Drop for Renderer {
                 self.context
                     .device
                     .destroy_command_pool(frame.command_pool, None);
+                self.context.destroy_buffer(
+                    &mut self.allocator.lock(),
+                    &mut frame.toon_params_uniform_buffer,
+                );
                 self.context
-                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.uniform_buffer);
+                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.frame_uniform_buffer);
                 self.context
                     .device
                     .destroy_descriptor_set_layout(frame.character_descriptor_layout, None);

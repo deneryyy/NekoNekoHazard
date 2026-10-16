@@ -35,11 +35,20 @@ pub struct Material {
 }
 
 pub struct Mesh {
+    pub transform: glam::Mat4,
     pub vertex_buffer_address: Option<vk::DeviceAddress>,
     pub vertex_buffer: AllocatedBuffer,
     pub index_buffer: AllocatedBuffer,
     pub index_count: u32,
     pub material: u32,
+}
+
+fn compute_world(node: &gltf::Node, parent: glam::Mat4, world: &mut Vec<glam::Mat4>) {
+    let w = parent * glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+    world[node.index()] = w;
+    for child in node.children() {
+        compute_world(&child, w, world);
+    }
 }
 
 pub fn load_model_glb(
@@ -53,6 +62,12 @@ pub fn load_model_glb(
     let gltf = Gltf::from_reader(gltf_reader)?;
     let buffer_data = gltf::import_buffers(&gltf.document, None, gltf.blob.clone())?;
     let mut meshes = Vec::new();
+    let mut world = vec![glam::Mat4::IDENTITY; gltf.nodes().len()];
+    for scene in gltf.scenes() {
+        for node in scene.nodes() {
+            compute_world(&node, glam::Mat4::IDENTITY, &mut world);
+        }
+    }
     for scene in gltf.scenes() {
         for node in scene.nodes() {
             parse_node(
@@ -61,6 +76,7 @@ pub fn load_model_glb(
                 &node,
                 &mut meshes,
                 &buffer_data,
+                &mut world,
             );
         }
     }
@@ -71,9 +87,8 @@ pub fn load_model_glb(
         match &material
             .pbr_metallic_roughness()
             .base_color_texture()
-            .map(|tex| {
-                tex.texture().source()
-            }) {
+            .map(|tex| tex.texture().source())
+        {
             None => {}
             Some(image) => match image.source() {
                 gltf::image::Source::View { view, mime_type } => {
@@ -134,6 +149,7 @@ fn parse_node(
     node: &gltf::Node,
     meshes: &mut Vec<Mesh>,
     buffer_data: &Vec<buffer::Data>,
+    world: &mut Vec<glam::Mat4>,
 ) {
     match node.mesh() {
         None => {}
@@ -169,6 +185,58 @@ fn parse_node(
 
                         tex_coord_index += 1;
                     });
+                }
+
+                if let (Some(skin), Some(joints_it), Some(weights_it)) =
+                    (node.skin(), reader.read_joints(0), reader.read_weights(0))
+                {
+                    let joints: Vec<[u16; 4]> = joints_it.into_u16().collect();
+                    let weights: Vec<[f32; 4]> = weights_it.into_f32().collect();
+                    assert_eq!(joints.len(), vertices.len());
+                    assert_eq!(weights.len(), vertices.len());
+
+                    let skin_reader = 
+                        skin.reader(|b| Some(&buffer_data[b.index()]));
+                    let ibms: Vec<glam::Mat4> = skin_reader
+                        .read_inverse_bind_matrices()
+                        .map(|it| it.map(|m| glam::Mat4::from_cols_array_2d(&m)).collect())
+                        .unwrap_or_default();
+
+                    // Spec-correct: result is in the mesh node's local space,
+                    // so keep transform = world[node] on the Mesh.
+                    let inv_mesh = world[node.index()].inverse();
+                    let joint_mats: Vec<glam::Mat4> = skin
+                        .joints()
+                        .enumerate()
+                        .map(|(i, j)| {
+                            inv_mesh
+                                * world[j.index()]
+                                * ibms.get(i).copied().unwrap_or(glam::Mat4::IDENTITY)
+                        })
+                        .collect();
+
+                    for (i, v) in vertices.iter_mut().enumerate() {
+                        let (j, w) = (joints[i], weights[i]);
+                        let sum = w[0] + w[1] + w[2] + w[3];
+                        if sum <= f32::EPSILON {
+                            continue; // unskinned vertex, leave as-is
+                        }
+                        let w = [w[0] / sum, w[1] / sum, w[2] / sum, w[3] / sum];
+
+                        let m = joint_mats[j[0] as usize] * w[0]
+                            + joint_mats[j[1] as usize] * w[1]
+                            + joint_mats[j[2] as usize] * w[2]
+                            + joint_mats[j[3] as usize] * w[3];
+
+                        v.position = m.transform_point3(glam::Vec3::from(v.position)).to_array();
+
+                        let n3 = glam::Mat3::from_mat4(m);
+                        if n3.determinant().abs() > 1e-8 {
+                            v.normal = (n3.inverse().transpose() * glam::Vec3::from(v.normal))
+                                .normalize_or_zero()
+                                .to_array();
+                        }
+                    }
                 }
 
                 let mut indices = Vec::new();
@@ -217,13 +285,15 @@ fn parse_node(
                     }
                 };
 
-                let mut staging_buffer = context.create_buffer(
-                    "Staging buffer",
-                    &mut allocator.lock(),
-                    vertex_buffer_size + index_buffer_size,
-                    vk::BufferUsageFlags::TRANSFER_SRC,
-                    gpu_allocator::MemoryLocation::CpuToGpu,
-                ).unwrap();
+                let mut staging_buffer = context
+                    .create_buffer(
+                        "Staging buffer",
+                        &mut allocator.lock(),
+                        vertex_buffer_size + index_buffer_size,
+                        vk::BufferUsageFlags::TRANSFER_SRC,
+                        gpu_allocator::MemoryLocation::CpuToGpu,
+                    )
+                    .unwrap();
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         vertices.as_ptr(),
@@ -272,6 +342,7 @@ fn parse_node(
                 context.destroy_buffer(&mut allocator.lock(), &mut staging_buffer);
 
                 meshes.push(Mesh {
+                    transform: world[node.index()],
                     vertex_buffer_address,
                     vertex_buffer,
                     index_buffer,
@@ -289,6 +360,7 @@ fn parse_node(
             &child,
             meshes,
             buffer_data,
+            world,
         );
     }
 }

@@ -15,7 +15,7 @@ use tracing::info;
 use crate::app::{
     engine::{
         renderer::{
-            Frame, context::{AllocatedBuffer, RenderingContext}, model::Model, staging::RingStagingBuffer, swapchain::Swapchain, texture::Texture,
+            Frame, context::{AllocatedBuffer, RenderingContext}, model::{Model, ModelVertex}, staging::RingStagingBuffer, swapchain::Swapchain, texture::Texture,
         }, resources,
     }, game::{self, world::World},
 };
@@ -24,11 +24,13 @@ use crate::app::{
 struct CharacterPushConstants {
     vertex_buffer: vk::DeviceAddress,
     material_id: u32,
+    model: glam::Mat4,
 }
 
 #[repr(C, align(16))]
 struct LegacyCharacterPushConstants {
     material_id: u32,
+    model: glam::Mat4,
 }
 
 pub struct CharacterRenderer {
@@ -47,12 +49,12 @@ impl CharacterRenderer {
         world: Arc<World>,
         texture_num: u32,
         swapchain: &Swapchain,
-        vertex_character_descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
+        character_descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
         texture_descriptor_set_layout: &'a vk::DescriptorSetLayout,
         models: Vec<Model>,
     ) -> Result<Self> {
         let mut character_set_layouts = Vec::new();
-        character_set_layouts.extend_from_slice(vertex_character_descriptor_set_layouts);
+        character_set_layouts.extend_from_slice(character_descriptor_set_layouts);
         character_set_layouts.push(*texture_descriptor_set_layout);
         let character_push_constant_range = if context.use_buffer_device_address {
             vk::PushConstantRange::default()
@@ -97,10 +99,47 @@ impl CharacterRenderer {
         };
         let fragment_shader = resources::load_shader_module(
             include_str!(concat!(env!("OUT_DIR"), "/res/shaders/character.frag")),
-            "terrain.frag",
+            "character.frag",
             ShaderKind::Fragment,
             &context.device,
         )?;
+
+        let binding_descriptions = [vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<ModelVertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+
+        let attribute_descriptions = [
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(std::mem::offset_of!(ModelVertex, position) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32_SFLOAT)
+                .offset(std::mem::offset_of!(ModelVertex, uv1) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(2)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(std::mem::offset_of!(ModelVertex, normal) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(3)
+                .format(vk::Format::R32_SFLOAT)
+                .offset(std::mem::offset_of!(ModelVertex, uv2) as u32),
+        ];
+
+        let vertex_input_state = if context.use_buffer_device_address {
+            vk::PipelineVertexInputStateCreateInfo::default()
+        } else {
+            vk::PipelineVertexInputStateCreateInfo::default()
+                .vertex_binding_descriptions(&binding_descriptions)
+                .vertex_attribute_descriptions(&attribute_descriptions)
+        };
+
         let character_pipeline = context.create_graphics_pipeline(
             vk::Extent2D::default()
                 .width(swapchain.draw_image.extent.width)
@@ -112,6 +151,7 @@ impl CharacterRenderer {
             character_pipeline_layout,
             Default::default(),
             swapchain.main_render_pass,
+            vertex_input_state
         )?;
 
         unsafe {
@@ -164,10 +204,16 @@ impl CharacterRenderer {
                         &[],
                     );
 
+                    let model = glam::Mat4::from_scale(glam::Vec3 {
+                        x: 20.0,
+                        y: 20.0,
+                        z: 20.0,
+                    }).mul_mat4(&mesh.transform);
                     if self.context.use_buffer_device_address {
                         let push_constants = CharacterPushConstants {
                             vertex_buffer: mesh.vertex_buffer_address.unwrap(),
                             material_id: mesh.material,
+                            model,
                         };
 
                         self.context.device.cmd_push_constants(
@@ -183,6 +229,7 @@ impl CharacterRenderer {
                     } else {
                         let legacy_push_constants = LegacyCharacterPushConstants {
                             material_id: mesh.material,
+                            model,
                         };
 
                         self.context.device.cmd_push_constants(
@@ -236,14 +283,10 @@ impl Drop for CharacterRenderer {
                 .destroy_pipeline(self.character_pipeline, None);
             for model in &mut self.models {
                 for mesh in &mut model.meshes {
-                    self.context.destroy_buffer(
-                        &mut self.allocator.lock(),
-                        &mut mesh.vertex_buffer,
-                    );
-                    self.context.destroy_buffer(
-                        &mut self.allocator.lock(),
-                        &mut mesh.index_buffer,
-                    );
+                    self.context
+                        .destroy_buffer(&mut self.allocator.lock(), &mut mesh.vertex_buffer);
+                    self.context
+                        .destroy_buffer(&mut self.allocator.lock(), &mut mesh.index_buffer);
                 }
 
                 model
