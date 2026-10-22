@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    ops::Mul,
     sync::Arc,
 };
 
@@ -14,10 +15,11 @@ use tracing::info;
 
 use crate::app::{
     engine::{
-        renderer::{
-            Frame, context::{AllocatedBuffer, RenderingContext}, model::{Model, ModelVertex}, staging::RingStagingBuffer, swapchain::Swapchain, texture::Texture,
-        }, resources,
-    }, game::{self, world::World},
+        gpu::context::RenderingContext,
+        renderer::{Frame, swapchain::Swapchain},
+        resources::{self, Resources, data::ModelVertex, pool::Handle, types::Model},
+    },
+    game::{self, world::World},
 };
 
 #[repr(C, align(16))]
@@ -33,11 +35,23 @@ struct LegacyCharacterPushConstants {
     model: glam::Mat4,
 }
 
+struct DrawItem {
+    index_page: u32,
+    vertex_page: u32,
+    first_index: u32,
+    index_count: u32,
+    vertex_offset: i32,
+    mesh_transform: glam::Mat4,
+    bindless_index: u32,
+    vertex_address: Option<vk::DeviceAddress>,
+    vertex_buffer: vk::Buffer,
+}
+
 pub struct CharacterRenderer {
-    pub models: Vec<Model>,
     pub character_pipeline: vk::Pipeline,
     pub character_pipeline_layout: vk::PipelineLayout,
     pub world: Arc<World>,
+    pub resources: Arc<Mutex<Resources>>,
     pub allocator: Arc<Mutex<Allocator>>,
     pub context: Arc<RenderingContext>,
 }
@@ -47,15 +61,17 @@ impl CharacterRenderer {
         context: Arc<RenderingContext>,
         allocator: Arc<Mutex<Allocator>>,
         world: Arc<World>,
-        texture_num: u32,
         swapchain: &Swapchain,
         character_descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
-        texture_descriptor_set_layout: &'a vk::DescriptorSetLayout,
-        models: Vec<Model>,
+        resources: Arc<Mutex<Resources>>,
     ) -> Result<Self> {
+        let texture_descriptor_set_layout = {
+            let res = resources.lock();
+            res.bindless.layout
+        };
         let mut character_set_layouts = Vec::new();
         character_set_layouts.extend_from_slice(character_descriptor_set_layouts);
-        character_set_layouts.push(*texture_descriptor_set_layout);
+        character_set_layouts.push(texture_descriptor_set_layout);
         let character_push_constant_range = if context.use_buffer_device_address {
             vk::PushConstantRange::default()
                 .offset(0)
@@ -151,7 +167,7 @@ impl CharacterRenderer {
             character_pipeline_layout,
             Default::default(),
             swapchain.main_render_pass,
-            vertex_input_state
+            vertex_input_state,
         )?;
 
         unsafe {
@@ -160,10 +176,10 @@ impl CharacterRenderer {
         }
 
         Ok(Self {
-            models,
             character_pipeline,
             character_pipeline_layout,
             world,
+            resources,
             allocator,
             context,
         })
@@ -178,95 +194,123 @@ impl CharacterRenderer {
         texture_set: vk::DescriptorSet,
     ) {
         unsafe {
-            for model in self.models.iter() {
-                for mesh in model.meshes.iter() {
-                    self.context.device.cmd_bind_pipeline(
-                        frame.command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.character_pipeline,
-                    );
+            self.context.device.cmd_bind_pipeline(
+                frame.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.character_pipeline,
+            );
 
-                    self.context.device.cmd_bind_descriptor_sets(
-                        frame.command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.character_pipeline_layout,
-                        0,
-                        &[frame.character_descriptors],
-                        &[],
-                    );
+            self.context.device.cmd_bind_descriptor_sets(
+                frame.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.character_pipeline_layout,
+                0,
+                &[frame.character_descriptors],
+                &[],
+            );
 
-                    self.context.device.cmd_bind_descriptor_sets(
-                        frame.command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.character_pipeline_layout,
-                        2,
-                        &[texture_set],
-                        &[],
-                    );
+            self.context.device.cmd_bind_descriptor_sets(
+                frame.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.character_pipeline_layout,
+                2,
+                &[texture_set],
+                &[],
+            );
 
-                    let model = glam::Mat4::from_scale(glam::Vec3 {
-                        x: 20.0,
-                        y: 20.0,
-                        z: 20.0,
-                    }).mul_mat4(&mesh.transform);
-                    if self.context.use_buffer_device_address {
-                        let push_constants = CharacterPushConstants {
-                            vertex_buffer: mesh.vertex_buffer_address.unwrap(),
-                            material_id: mesh.material,
-                            model,
-                        };
+            let res = self.resources.lock();
+            let geo = res.geometry();
+            let mut items: Vec<DrawItem> = res
+                .meshes
+                .iter()
+                .filter_map(|mesh_tuple| {
+                    let mesh = mesh_tuple.1;
+                    let mat = res.material(mesh.material)?;
+                    let tex = res.texture(mat.base_color)?;
+                    let vpage = geo.vertices.get_page(mesh.vertex_alloc.page as usize);
 
-                        self.context.device.cmd_push_constants(
-                            frame.command_buffer,
-                            self.character_pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            std::slice::from_raw_parts(
-                                &push_constants as *const _ as *const u8,
-                                std::mem::size_of::<CharacterPushConstants>(),
-                            ),
-                        );
-                    } else {
-                        let legacy_push_constants = LegacyCharacterPushConstants {
-                            material_id: mesh.material,
-                            model,
-                        };
+                    Some(DrawItem {
+                        index_page: mesh.index_alloc.page,
+                        vertex_page: mesh.vertex_alloc.page,
+                        first_index: mesh.index_alloc.offset_units(),
+                        index_count: mesh.index_alloc.units,
+                        vertex_offset: mesh.vertex_alloc.offset_units() as i32,
+                        mesh_transform: mesh.transform,
+                        bindless_index: tex.bindless_index,
+                        vertex_address: vpage.address(),
+                        vertex_buffer: vpage.vk_buffer(),
+                    })
+                })
+                .collect();
 
-                        self.context.device.cmd_push_constants(
-                            frame.command_buffer,
-                            self.character_pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            std::slice::from_raw_parts(
-                                &legacy_push_constants as *const _ as *const u8,
-                                std::mem::size_of::<LegacyCharacterPushConstants>(),
-                            ),
-                        );
-
-                        self.context.device.cmd_bind_vertex_buffers(
-                            frame.command_buffer,
-                            0,
-                            &[mesh.vertex_buffer.buffer],
-                            &[0],
-                        );
-                    }
-
+            items.sort_unstable_by_key(|i| (i.index_page, i.vertex_page));
+            let mut bound_index_page = u32::MAX;
+            for item in &items {
+                if item.index_page != bound_index_page {
+                    let page = geo.indices.get_page(item.index_page as usize);
                     self.context.device.cmd_bind_index_buffer(
                         frame.command_buffer,
-                        mesh.index_buffer.buffer,
+                        page.vk_buffer(),
                         0,
                         vk::IndexType::UINT32,
                     );
+                    bound_index_page = item.index_page;
+                }
+                let scale = glam::Mat4::from_scale(glam::Vec3 {
+                    x: 20.0,
+                    y: 20.0,
+                    z: 20.0,
+                });
+                if self.context.use_buffer_device_address {
+                    let push_constants = CharacterPushConstants {
+                        vertex_buffer: item.vertex_address.unwrap(),
+                        material_id: item.bindless_index,
+                        model: scale,
+                    };
 
-                    self.context.device.cmd_draw_indexed(
+                    self.context.device.cmd_push_constants(
                         frame.command_buffer,
-                        mesh.index_count,
-                        1,
+                        self.character_pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
                         0,
+                        std::slice::from_raw_parts(
+                            &push_constants as *const _ as *const u8,
+                            std::mem::size_of::<CharacterPushConstants>(),
+                        ),
+                    );
+                } else {
+                    let legacy_push_constants = LegacyCharacterPushConstants {
+                        material_id: item.bindless_index,
+                        model: scale,
+                    };
+
+                    self.context.device.cmd_push_constants(
+                        frame.command_buffer,
+                        self.character_pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
                         0,
+                        std::slice::from_raw_parts(
+                            &legacy_push_constants as *const _ as *const u8,
+                            std::mem::size_of::<LegacyCharacterPushConstants>(),
+                        ),
+                    );
+
+                    self.context.device.cmd_bind_vertex_buffers(
+                        frame.command_buffer,
                         0,
+                        &[item.vertex_buffer],
+                        &[0],
                     );
                 }
+
+                self.context.device.cmd_draw_indexed(
+                    frame.command_buffer,
+                    item.index_count,
+                    1,
+                    item.first_index,
+                    item.vertex_offset,
+                    0,
+                );
             }
         }
     }
@@ -281,6 +325,7 @@ impl Drop for CharacterRenderer {
             self.context
                 .device
                 .destroy_pipeline(self.character_pipeline, None);
+            /*
             for model in &mut self.models {
                 for mesh in &mut model.meshes {
                     self.context
@@ -301,6 +346,7 @@ impl Drop for CharacterRenderer {
                         );
                     });
             }
+            */
         }
     }
 }

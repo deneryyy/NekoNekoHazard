@@ -7,8 +7,11 @@ use egui_ash_renderer::{DynamicRendering, Options, RenderMode, Renderer, allocat
 use egui_winit::State;
 use winit::{event::WindowEvent, window::Window};
 
-use crate::app::engine::renderer::{
-    self, Frame, ToonParamsUniformBufferObject, context::RenderingContext, swapchain::Swapchain,
+use crate::app::engine::{
+    gpu::context::RenderingContext,
+    renderer::{
+        self, Frame, ToonParamsUniformBufferObject, swapchain::Swapchain,
+    },
 };
 
 pub struct EguiRenderer {
@@ -132,22 +135,68 @@ impl EguiRenderer {
                     ui.add(egui::DragValue::new(&mut self.light_pos.x).prefix("light pos x: "));
                     ui.add(egui::DragValue::new(&mut self.light_pos.y).prefix("light pos y: "));
                     ui.add(egui::DragValue::new(&mut self.light_pos.z).prefix("light pos z: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.shadow_tint.x).prefix("shadow tint r: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.shadow_tint.y).prefix("shadow tint g: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.shadow_tint.z).prefix("shadow tint b: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.x).prefix("light color r: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.y).prefix("light color b: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.z).prefix("light color g: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.light_color.w).prefix("light color a: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.step_threshold).prefix("step threshold: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.step_softness).prefix("step softness: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_power).prefix("rim power: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_strength).prefix("rim strength: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_edge_0).prefix("rim edge 0: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.rim_edge_1).prefix("rim edge 1: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.spec_threshold).prefix("spec threshold: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.shininess).prefix("shininess: "));
-                    ui.add(egui::DragValue::new(&mut self.toon_params.spec_strength).prefix("spec strength: "));
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.shadow_tint.x)
+                            .prefix("shadow tint r: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.shadow_tint.y)
+                            .prefix("shadow tint g: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.shadow_tint.z)
+                            .prefix("shadow tint b: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.light_color.x)
+                            .prefix("light color r: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.light_color.y)
+                            .prefix("light color b: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.light_color.z)
+                            .prefix("light color g: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.light_color.w)
+                            .prefix("light color a: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.step_threshold)
+                            .prefix("step threshold: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.step_softness)
+                            .prefix("step softness: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.rim_power).prefix("rim power: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.rim_strength)
+                            .prefix("rim strength: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.rim_edge_0)
+                            .prefix("rim edge 0: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.rim_edge_1)
+                            .prefix("rim edge 1: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.spec_threshold)
+                            .prefix("spec threshold: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.shininess).prefix("shininess: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.toon_params.spec_strength)
+                            .prefix("spec strength: "),
+                    );
                 });
         });
 

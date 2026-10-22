@@ -1,3 +1,4 @@
+pub mod gpu;
 pub mod input;
 pub mod renderer;
 pub mod resources;
@@ -5,6 +6,7 @@ pub mod resources;
 use std::{sync::Arc, thread, time::Instant};
 
 use anyhow::{Ok, Result};
+use parking_lot::Mutex;
 use winit::{
     event::{DeviceEvent, ElementState, KeyEvent, WindowEvent},
     event_loop::ActiveEventLoop,
@@ -14,8 +16,10 @@ use winit::{
 
 use crate::app::{
     engine::{
+        gpu::context::RenderingContext,
         input::InputManager,
-        renderer::{Renderer, context::RenderingContext},
+        renderer::Renderer,
+        resources::{Resources, gltf},
     },
     game::{Game, world::World},
 };
@@ -26,6 +30,7 @@ pub struct Engine {
     world: Arc<World>,
     input_manager: Arc<InputManager>,
     renderer: Renderer,
+    resources: Arc<Mutex<Resources>>,
     window: Arc<Window>,
     context: Arc<RenderingContext>,
 }
@@ -44,13 +49,29 @@ impl Engine {
         window.set_cursor_visible(false);
         window.set_cursor_grab(winit::window::CursorGrabMode::Locked)?;
         let context = Arc::new(RenderingContext::new(window.clone())?);
-        let renderer = Renderer::new(context.clone(), window.clone(), world.clone())?;
+        let resources = Arc::new(Mutex::new(Resources::new(context.clone())?));
+        let miku_data = gltf::load_model_glb(
+            "miku",
+            include_bytes!(concat!(env!("OUT_DIR"), "/res/models/hatsune_miku.glb")),
+        )?;
+        {
+            let mut res = resources.lock();
+            res.upload_model(miku_data)?;
+            res.flush()?;
+        }
+        let renderer = Renderer::new(
+            context.clone(),
+            window.clone(),
+            resources.clone(),
+            world.clone(),
+        )?;
         Ok(Self {
             hide_cursor: true,
             last_frame: Instant::now(),
             world,
             input_manager,
             renderer,
+            resources,
             window,
             context,
         })

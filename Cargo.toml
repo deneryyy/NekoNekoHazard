@@ -8,6 +8,7 @@ anyhow = "1.0.102"
 ash = "0.38.0"
 ash-window = "0.13.0"
 gpu-allocator = "0.28.0"
+offset-allocator = "0.2.0"
 glam = "0.32.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "registry"] }
@@ -23,6 +24,7 @@ bevy_ecs = "0.20.0"
 egui = "0.36.2"
 egui-ash-renderer = { version = "0.13.0", features = ["gpu-allocator"] }
 egui-winit = "0.36.2"
+bytemuck = "1.25.2"
 
 [build-dependencies]
 anyhow = "1.0"

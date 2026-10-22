@@ -24,7 +24,8 @@ layout(set = 0, binding = 1) uniform ToonParams {
     float _pad;
 } toon;
 
-layout(set = 2, binding = 0) uniform sampler2D texSampler[];
+layout(set = 2, binding = 0) uniform sampler uSampler;
+layout(set = 2, binding = 1) uniform texture2D uTextures[];
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) flat in uint materialId;
@@ -34,7 +35,7 @@ layout(location = 3) in vec3 fragPos;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    vec3 albedo = texture(texSampler[nonuniformEXT(materialId)], fragTexCoord).rgb;
+    vec3 albedo = texture(sampler2D(uTextures[nonuniformEXT(materialId)], uSampler), fragTexCoord).rgb;
 
     vec3 N = normalize(normal);
     vec3 L = normalize(vec3(ubo.lightPos) - fragPos);

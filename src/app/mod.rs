@@ -1,10 +1,10 @@
-pub mod engine;
-pub mod game;
-
 use anyhow::Result;
 use winit::application::ApplicationHandler;
 
 use crate::app::engine::Engine;
+
+pub mod engine;
+pub mod game;
 
 #[derive(Default)]
 pub struct App {

@@ -2,8 +2,8 @@ use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Ok, Result};
 use ash::vk::{
-    self, BufferCreateInfo, CommandBufferUsageFlags,
-    PipelineDepthStencilStateCreateInfo, RenderingAttachmentInfo,
+    self, BufferCreateInfo, CommandBufferUsageFlags, PipelineDepthStencilStateCreateInfo,
+    RenderingAttachmentInfo,
 };
 use gpu_allocator::{
     MemoryLocation,
@@ -31,6 +31,8 @@ pub struct QueueFamilies {
 pub struct PhysicalDevice {
     pub handle: vk::PhysicalDevice,
     pub properties: vk::PhysicalDeviceProperties,
+    pub properties2: vk::PhysicalDeviceProperties2<'static>,
+    pub vulkan12_properties: vk::PhysicalDeviceVulkan12Properties<'static>,
     pub features: vk::PhysicalDeviceFeatures,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub queue_families: Vec<QueueFamily>,
@@ -139,6 +141,12 @@ impl RenderingContext {
                 .into_iter()
                 .map(|handle| {
                     let properties = instance.get_physical_device_properties(handle);
+                    let mut vulkan12_properties = vk::PhysicalDeviceVulkan12Properties::default();
+                    let mut properties2 = vk::PhysicalDeviceProperties2 {
+                        p_next: &mut vulkan12_properties as *mut _ as *mut std::os::raw::c_void,
+                        ..Default::default()
+                    };
+                    instance.get_physical_device_properties2(handle, &mut properties2);
                     let features = instance
                         .get_physical_device_features(handle)
                         .sampler_anisotropy(true);
@@ -158,6 +166,8 @@ impl RenderingContext {
                     PhysicalDevice {
                         handle,
                         properties,
+                        properties2,
+                        vulkan12_properties,
                         features,
                         memory_properties,
                         queue_families,
@@ -401,10 +411,12 @@ impl RenderingContext {
         &self,
         command_buffer: vk::CommandBuffer,
         image: vk::Image,
+        base_mip: u32,
+        mip_count: u32,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         aspect_mask: vk::ImageAspectFlags,
-        src_stage: vk::PipelineStageFlags, // Keep passing legacy flags for the 1.2 path
+        src_stage: vk::PipelineStageFlags,
         dst_stage: vk::PipelineStageFlags,
         src_access: vk::AccessFlags,
         dst_access: vk::AccessFlags,
@@ -412,8 +424,8 @@ impl RenderingContext {
         unsafe {
             let range = vk::ImageSubresourceRange::default()
                 .aspect_mask(aspect_mask)
-                .base_mip_level(0)
-                .level_count(vk::REMAINING_MIP_LEVELS)
+                .base_mip_level(base_mip)
+                .level_count(mip_count)
                 .base_array_layer(0)
                 .layer_count(vk::REMAINING_ARRAY_LAYERS);
 
@@ -566,7 +578,6 @@ impl RenderingContext {
     ) -> Result<vk::Pipeline> {
         let entry_point = std::ffi::CString::new("main")?;
 
-        
         unsafe {
             Ok(self
                 .device
@@ -820,6 +831,16 @@ impl RenderingContext {
             .free(std::mem::take(&mut buffer.allocation))
             .unwrap();
         unsafe { self.device.destroy_buffer(buffer.buffer, None) };
+    }
+
+    pub fn destroy_image(&self, allocator: &mut Allocator, image: &mut AllocatedImage) {
+        unsafe {
+            self.device.destroy_image(image.image, None);
+            self.device.destroy_image_view(image.image_view, None);
+            allocator
+                .free(std::mem::take(&mut image.allocation))
+                .unwrap();
+        }
     }
 }
 

@@ -1,10 +1,10 @@
-mod app;
-
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::app::App;
+
+mod app;
 
 fn main() -> Result<()> {
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

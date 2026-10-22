@@ -1,36 +1,34 @@
-pub mod camera;
-pub mod character_renderer;
-pub mod context;
-pub mod descriptor;
-pub mod egui_renderer;
-pub mod model;
-pub mod staging;
-pub mod swapchain;
-pub mod texture;
-
 use std::{sync::Arc, u32};
 
 use anyhow::{Ok, Result};
-use tracing::info;
 use glam::Mat4;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use parking_lot::Mutex;
+use tracing::info;
 use winit::window::Window;
 
 use crate::app::{
-    engine::renderer::{
-        character_renderer::CharacterRenderer,
-        context::{AllocatedBuffer, RenderingContext},
-        descriptor::{DescriptorAllocator, DescriptorLayoutBuilder, PoolSizeRatio},
-        egui_renderer::EguiRenderer,
-        model::Model,
-        staging::RingStagingBuffer,
-        swapchain::Swapchain,
-        texture::Texture,
+    engine::{
+        gpu::{
+            context::{AllocatedBuffer, RenderingContext},
+            descriptor::{DescriptorAllocator, DescriptorLayoutBuilder, PoolSizeRatio},
+            staging::RingStagingBuffer,
+            sync::FRAME_OVERLAP,
+        },
+        renderer::{
+            character_renderer::CharacterRenderer, egui_renderer::EguiRenderer,
+            swapchain::Swapchain,
+        },
+        resources::{Resources, pool::Handle},
     },
     game::world::World,
 };
-use ash::vk::{self, CommandBufferUsageFlags};
+use ash::vk::{self, CommandBufferUsageFlags, DescriptorSet, DescriptorSetLayout};
+
+pub mod camera;
+pub mod character_renderer;
+pub mod egui_renderer;
+pub mod swapchain;
 
 pub struct Frame {
     character_descriptors: vk::DescriptorSet,
@@ -80,15 +78,15 @@ pub struct Renderer {
     frame_number: usize,
     frames: Vec<Frame>,
     swapchain: Swapchain,
+    resources: Arc<Mutex<Resources>>,
     context: Arc<RenderingContext>,
 }
-
-pub const FRAME_OVERLAP: usize = 2;
 
 impl Renderer {
     pub fn new(
         context: Arc<RenderingContext>,
         window: Arc<Window>,
+        resources: Arc<Mutex<Resources>>,
         world: Arc<World>,
     ) -> Result<Self> {
         let mut swapchain = Swapchain::new(context.clone(), window.clone())?;
@@ -103,73 +101,15 @@ impl Renderer {
             allocation_sizes: Default::default(),
         })?));
 
-        let miku_model = model::load_model_glb(
-            context.clone(),
-            allocator.clone(),
-            Vec::from(include_bytes!(concat!(
-                env!("OUT_DIR"),
-                "/res/models/hatsune_miku.glb"
-            ))),
-        )?;
-        let models = Vec::from([miku_model]);
-
-        let textures: Vec<&Texture> = models
-            .iter()
-            .flat_map(|model| &model.materials)
-            .map(|material| &material.diffuse_texture)
-            .collect();
-        let supported_textures: u32 = textures.len() as u32;
-
-        let sizes = Vec::from([
-            PoolSizeRatio {
-                desc_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ratio: 4,
-            },
-            PoolSizeRatio {
-                desc_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                ratio: supported_textures,
-            },
-        ]);
-        let global_descriptor_allocator =
-            DescriptorAllocator::new(&context.device, FRAME_OVERLAP as u32 * 2 + 1, sizes)?;
-
-        let mut texture_descriptor_layout_builder = DescriptorLayoutBuilder::new();
-        texture_descriptor_layout_builder.add_binding(
-            0,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            supported_textures,
-            vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
-            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-                | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT
-                | vk::DescriptorBindingFlags::PARTIALLY_BOUND,
+        let ratios = Vec::from([PoolSizeRatio {
+            ty: vk::DescriptorType::UNIFORM_BUFFER,
+            per_set: 4.0,
+        }]);
+        let mut global_descriptor_allocator = DescriptorAllocator::new(
+            ratios,
+            FRAME_OVERLAP as u32 * 2,
+            vk::DescriptorPoolCreateFlags::empty(),
         );
-
-        let texture_descriptor_set_layout =
-            texture_descriptor_layout_builder.build(&context.device)?;
-        let texture_descriptors = global_descriptor_allocator.allocate(
-            &context.device,
-            texture_descriptor_set_layout,
-            &[supported_textures],
-        )?;
-        let image_infos: Vec<vk::DescriptorImageInfo> = textures
-            .iter()
-            .map(|tex| {
-                vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(tex.image.image_view)
-                    .sampler(tex.sampler)
-            })
-            .collect();
-
-        let tex_write = vk::WriteDescriptorSet::default()
-            .dst_binding(0)
-            .dst_set(texture_descriptors)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&image_infos);
-
-        unsafe {
-            context.device.update_descriptor_sets(&[tex_write], &[]);
-        }
 
         unsafe {
             let mut render_finished_semaphores: Vec<vk::Semaphore> =
@@ -226,21 +166,21 @@ impl Renderer {
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
 
-                let mut character_descriptor_layout_builder = DescriptorLayoutBuilder::new();
-                character_descriptor_layout_builder.add_binding(
-                    0,
-                    vk::DescriptorType::UNIFORM_BUFFER,
-                    1,
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    vk::DescriptorBindingFlags::empty(),
-                );
-                character_descriptor_layout_builder.add_binding(
-                    1,
-                    vk::DescriptorType::UNIFORM_BUFFER,
-                    1,
-                    vk::ShaderStageFlags::FRAGMENT,
-                    vk::DescriptorBindingFlags::empty(),
-                );
+                let character_descriptor_layout_builder = DescriptorLayoutBuilder::new()
+                    .binding(
+                        0,
+                        vk::DescriptorType::UNIFORM_BUFFER,
+                        1,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        vk::DescriptorBindingFlags::empty(),
+                    )
+                    .binding(
+                        1,
+                        vk::DescriptorType::UNIFORM_BUFFER,
+                        1,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        vk::DescriptorBindingFlags::empty(),
+                    );
 
                 let character_descriptor_layout =
                     character_descriptor_layout_builder.build(&context.device)?;
@@ -248,7 +188,7 @@ impl Renderer {
                 let character_descriptors = global_descriptor_allocator.allocate(
                     &context.device,
                     character_descriptor_layout,
-                    &[],
+                    None,
                 )?;
                 let mut desc_writes: Vec<vk::WriteDescriptorSet> = Vec::new();
                 let uniform_desc_info = &[vk::DescriptorBufferInfo::default()
@@ -273,7 +213,6 @@ impl Renderer {
                         .descriptor_count(1)
                         .buffer_info(toon_params_desc_info),
                 );
-                desc_writes.push(tex_write);
                 context.device.update_descriptor_sets(&desc_writes, &[]);
 
                 frames.push(Frame {
@@ -293,20 +232,22 @@ impl Renderer {
                 .map(|frame| return frame.character_descriptor_layout)
                 .collect::<Vec<_>>();
             let egui_renderer = EguiRenderer::new(window.clone(), context.clone(), &swapchain)?;
+            let (texture_descriptors, texture_descriptor_set_layout) = {
+                let res = resources.lock();
+                (res.bindless.set, res.bindless.layout)
+            };
             Ok(Self {
                 egui_renderer,
                 character_renderer: CharacterRenderer::new(
                     context.clone(),
                     allocator.clone(),
                     world.clone(),
-                    textures.len() as u32,
                     &swapchain,
                     &character_descriptor_set_layouts,
-                    &texture_descriptor_set_layout,
-                    models,
+                    resources.clone(),
                 )?,
-                texture_descriptor_set_layout,
                 texture_descriptors,
+                texture_descriptor_set_layout,
                 ring_staging_buffer: RingStagingBuffer::new(
                     context.clone(),
                     &mut allocator.lock(),
@@ -319,6 +260,7 @@ impl Renderer {
                 frame_number: 0,
                 frames,
                 swapchain,
+                resources,
                 context,
             })
         }
@@ -381,7 +323,13 @@ impl Renderer {
             self.context
                 .device
                 .wait_for_fences(&[frame.in_flight_fence], true, u64::MAX)?;
-            self.ring_staging_buffer.retire_frame(frame_index)?;
+            self.ring_staging_buffer.retire_frame(frame_index);
+            //self.global_descriptor_allocator.reset(&self.context.device)?;
+            {
+                let mut res = self.resources.lock();
+                res.bindless
+                    .collect(self.frame_number as u64, FRAME_OVERLAP as u64);
+            }
 
             if self.swapchain.is_dirty {
                 self.swapchain.resize()?;
@@ -421,6 +369,8 @@ impl Renderer {
             self.context.transition_image_layout(
                 frame.command_buffer,
                 self.swapchain.draw_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
@@ -433,6 +383,8 @@ impl Renderer {
             self.context.transition_image_layout(
                 frame.command_buffer,
                 self.swapchain.depth_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 vk::ImageAspectFlags::DEPTH,
@@ -499,6 +451,8 @@ impl Renderer {
             self.context.transition_image_layout(
                 frame.command_buffer,
                 self.swapchain.draw_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
@@ -510,6 +464,8 @@ impl Renderer {
             self.context.transition_image_layout(
                 frame.command_buffer,
                 self.swapchain.images[image_index as usize],
+                0,
+                vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
@@ -534,6 +490,8 @@ impl Renderer {
             self.context.transition_image_layout(
                 frame.command_buffer,
                 self.swapchain.images[image_index as usize],
+                0,
+                vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::ImageAspectFlags::COLOR,
@@ -548,6 +506,7 @@ impl Renderer {
 
             let render_finished_semaphore = self.render_finished_semaphores[image_index as usize];
 
+            self.ring_staging_buffer.end_frame(frame_index);
             if self.context.use_sync2 {
                 self.context.device.queue_submit2(
                     self.context.queues[self.context.queue_families.graphics as usize],
@@ -624,12 +583,9 @@ impl Drop for Renderer {
                     .device
                     .destroy_descriptor_set_layout(frame.character_descriptor_layout, None);
             });
-            self.context
-                .device
-                .destroy_descriptor_set_layout(self.texture_descriptor_set_layout, None);
 
             self.global_descriptor_allocator
-                .destroy_pool(&self.context.device);
+                .destroy(&self.context.device);
 
             self.context.destroy_buffer(
                 &mut self.allocator.lock(),

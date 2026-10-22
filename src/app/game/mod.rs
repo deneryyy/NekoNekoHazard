@@ -1,9 +1,9 @@
-pub mod player;
-pub mod world;
-
 use std::{sync::Arc, time::Instant};
 
 use crate::app::game::world::World;
+
+pub mod player;
+pub mod world;
 
 pub struct Game {
     world: Arc<World>,
