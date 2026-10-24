@@ -25,9 +25,17 @@ pub struct ModelVertex {
     pub uv2: f32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SkinVertex {
+    pub joints: [u32; 4],   // 32 bytes: simple; pack to u16/u8 later
+    pub weights: [f32; 4],
+}
+
 pub struct MeshData {
     pub vertices: Vec<ModelVertex>,
     pub indices: Vec<u32>,
+    pub skin: Option<(usize, Vec<SkinVertex>)>,
     pub material: Option<usize>,
     pub transform: glam::Mat4,
     pub node: usize,

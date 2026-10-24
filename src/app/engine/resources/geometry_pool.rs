@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, bail, ensure};
 use ash::vk;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use tracing::info;
 
 use gpu_allocator::{
     MemoryLocation,
@@ -106,6 +107,7 @@ impl BufferPage {
         usage: vk::BufferUsageFlags,
         enable_address: bool,
     ) -> Result<Self> {
+        info!("Allocating new geometry page {} with size {}", name, unit_size * capacity as u64);
         let buffer = context.create_buffer(
             name,
             &mut gpu.lock(),

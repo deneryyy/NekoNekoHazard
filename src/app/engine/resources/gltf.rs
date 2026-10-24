@@ -1,14 +1,14 @@
 use crate::app::engine::resources::data::{
-    TextureData, MaterialData, MeshData, ModelData, ModelVertex,
+    MaterialData, MeshData, ModelData, ModelVertex, SkinVertex, TextureData,
 };
 
 use anyhow::{Context, Result, bail};
+use glam::Mat4;
 use gltf::image::Format;
 use tracing::warn;
 
 pub fn load_model_glb(name: &str, bytes: &[u8]) -> Result<ModelData> {
-    let (document, buffers, gltf_images) =
-        gltf::import_slice(bytes).expect("failed to import glb");
+    let (document, buffers, gltf_images) = gltf::import_slice(bytes).expect("failed to import glb");
 
     let scene = document
         .default_scene()
@@ -99,11 +99,36 @@ fn collect_meshes(
                 None => (0..vertices.len() as u32).collect(), // non-indexed primitive
             };
 
+            let skin_stream = match (node.skin(), reader.read_joints(0), reader.read_weights(0)) {
+                (Some(skin), Some(j), Some(w)) => {
+                    let sv: Vec<SkinVertex> = j
+                        .into_u16()
+                        .zip(w.into_f32())
+                        .map(|(j, w)| {
+                            let sum = (w[0] + w[1] + w[2] + w[3]).max(f32::EPSILON);
+                            SkinVertex {
+                                joints: j.map(|x| x as u32),
+                                weights: w.map(|x| x / sum),
+                            }
+                        })
+                        .collect();
+                    Some((skin.index(), sv))
+                }
+                _ => None,
+            };
+
+            let transform = if node.skin().is_some() {
+                Mat4::IDENTITY
+            } else {
+                world[node.index()]
+            };
+
             out.push(MeshData {
                 vertices,
                 indices,
-                material: prim.material().index(), 
-                transform: world[node.index()],
+                skin: skin_stream,
+                material: prim.material().index(),
+                transform,
                 node: node.index(),
             });
         }
@@ -131,20 +156,19 @@ fn convert_image(img: gltf::image::Data) -> Result<TextureData> {
         Format::R16G16 => (2, 2),
         Format::R16G16B16 => (3, 2),
         Format::R16G16B16A16 => (4, 2),
-        other => bail!("unsupported image format {other:?}"), // float formats
+        other => bail!("unsupported image format {other:?}"),
     };
 
     let rgba8 = if img.format == Format::R8G8B8A8 {
-        img.pixels // the common case: no copy
+        img.pixels
     } else {
         let stride = channels * bytes_per_channel;
         let mut out = Vec::with_capacity(img.width as usize * img.height as usize * 4);
         for px in img.pixels.chunks_exact(stride) {
-            // for 16-bit channels take the high byte (little-endian => last byte of the channel)
             let c = |i: usize| px[i * bytes_per_channel + bytes_per_channel - 1];
             let rgba = match channels {
-                1 => [c(0), c(0), c(0), 255],  // grey
-                2 => [c(0), c(0), c(0), c(1)], // grey + alpha
+                1 => [c(0), c(0), c(0), 255],
+                2 => [c(0), c(0), c(0), c(1)],
                 3 => [c(0), c(1), c(2), 255],
                 _ => [c(0), c(1), c(2), c(3)],
             };

@@ -43,8 +43,6 @@ struct DrawItem {
     vertex_offset: i32,
     mesh_transform: glam::Mat4,
     bindless_index: u32,
-    vertex_address: Option<vk::DeviceAddress>,
-    vertex_buffer: vk::Buffer,
 }
 
 pub struct CharacterRenderer {
@@ -237,14 +235,13 @@ impl CharacterRenderer {
                         vertex_offset: mesh.vertex_alloc.offset_units() as i32,
                         mesh_transform: mesh.transform,
                         bindless_index: tex.bindless_index,
-                        vertex_address: vpage.address(),
-                        vertex_buffer: vpage.vk_buffer(),
                     })
                 })
                 .collect();
 
             items.sort_unstable_by_key(|i| (i.index_page, i.vertex_page));
             let mut bound_index_page = u32::MAX;
+            let mut bound_vertex_page = u32::MAX;
             for item in &items {
                 if item.index_page != bound_index_page {
                     let page = geo.indices.get_page(item.index_page as usize);
@@ -261,11 +258,13 @@ impl CharacterRenderer {
                     y: 20.0,
                     z: 20.0,
                 });
+
+                let page = geo.vertices.get_page(item.vertex_page as usize);
                 if self.context.use_buffer_device_address {
                     let push_constants = CharacterPushConstants {
-                        vertex_buffer: item.vertex_address.unwrap(),
+                        vertex_buffer: page.address().unwrap(),
                         material_id: item.bindless_index,
-                        model: scale,
+                        model: scale.mul_mat4(&item.mesh_transform),
                     };
 
                     self.context.device.cmd_push_constants(
@@ -281,7 +280,7 @@ impl CharacterRenderer {
                 } else {
                     let legacy_push_constants = LegacyCharacterPushConstants {
                         material_id: item.bindless_index,
-                        model: scale,
+                        model: scale.mul_mat4(&item.mesh_transform),
                     };
 
                     self.context.device.cmd_push_constants(
@@ -295,12 +294,15 @@ impl CharacterRenderer {
                         ),
                     );
 
-                    self.context.device.cmd_bind_vertex_buffers(
-                        frame.command_buffer,
-                        0,
-                        &[item.vertex_buffer],
-                        &[0],
-                    );
+                    if bound_vertex_page != item.vertex_page {
+                        self.context.device.cmd_bind_vertex_buffers(
+                            frame.command_buffer,
+                            0,
+                            &[page.vk_buffer()],
+                            &[0],
+                        );
+                        bound_vertex_page = item.vertex_page;
+                    }
                 }
 
                 self.context.device.cmd_draw_indexed(
