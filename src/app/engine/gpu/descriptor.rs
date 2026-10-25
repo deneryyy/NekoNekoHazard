@@ -170,6 +170,8 @@ pub struct DescriptorWriter {
 }
 
 impl DescriptorWriter {
+    pub fn new() -> Self { Self::default() }
+
     pub fn buffer(&mut self, binding: u32, ty: vk::DescriptorType,
                   buf: vk::Buffer, offset: u64, range: u64) -> &mut Self {
         self.buffers.push(vk::DescriptorBufferInfo { buffer: buf, offset, range });

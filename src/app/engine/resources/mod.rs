@@ -20,6 +20,7 @@ pub mod gltf;
 pub mod pool;
 pub mod types;
 pub mod uploader;
+pub mod animation;
 
 pub struct Resources {
     pub textures: Pool<Texture>,
@@ -91,6 +92,22 @@ impl Resources {
             .geometry_pool
             .indices
             .alloc(data.indices.len() as u32, PoolKind::INDEX)?;
+        let skin_alloc = if data.skin.is_some() {
+            let skins = data.skin.unwrap();
+            let alloc = self
+                .geometry_pool
+                .skins
+                .alloc(skins.1.len() as u32, PoolKind::SKIN)?;
+            let skin_page = self.geometry_pool.skins.get_page(alloc.page as usize);
+            self.uploader.upload_buffer(
+                skin_page.vk_buffer(),
+                self.geometry_pool.skins.byte_offset(&alloc),
+                bytemuck::cast_slice(&skins.1),
+            )?;
+            Some((alloc, skins.0))
+        } else {
+            None
+        };
 
         let vertex_page = self
             .geometry_pool
@@ -113,6 +130,7 @@ impl Resources {
         let mesh = Mesh {
             vertex_alloc,
             index_alloc,
+            skin_alloc,
             material: self
                 .materials
                 .get_at_index(data.material.unwrap_or(0))
@@ -141,6 +159,9 @@ impl Resources {
             meshes,
             materials,
             textures,
+            skeleton: data.skeleton,
+            skins: data.skins,
+            clips: data.clips,
         }))
     }
 

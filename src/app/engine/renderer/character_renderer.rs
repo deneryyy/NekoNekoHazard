@@ -1,25 +1,18 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    ops::Mul,
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use anyhow::Result;
 use ash::vk;
-use glam::IVec3;
 use gpu_allocator::vulkan::Allocator;
 use parking_lot::Mutex;
 use shaderc::ShaderKind;
-use std::result::Result::Ok as stdOk;
-use tracing::info;
 
 use crate::app::{
     engine::{
         gpu::context::RenderingContext,
-        renderer::{Frame, swapchain::Swapchain},
-        resources::{self, Resources, data::ModelVertex, pool::Handle, types::Model},
+        renderer::{Frame, scene::Scene, swapchain::Swapchain},
+        resources::{self, Resources, data::ModelVertex},
     },
-    game::{self, world::World},
+    game::world::World,
 };
 
 #[repr(C, align(16))]
@@ -27,25 +20,36 @@ struct CharacterPushConstants {
     vertex_buffer: vk::DeviceAddress,
     material_id: u32,
     model: glam::Mat4,
+    skin_page: u32,
+    skin_delta: i32,
+    joint_offset: u32,
 }
 
 #[repr(C, align(16))]
 struct LegacyCharacterPushConstants {
     material_id: u32,
     model: glam::Mat4,
+    skin_page: u32,
+    skin_delta: i32,
+    joint_offset: u32,
 }
 
 struct DrawItem {
     index_page: u32,
     vertex_page: u32,
+    skin_page: u32,
     first_index: u32,
     index_count: u32,
     vertex_offset: i32,
     mesh_transform: glam::Mat4,
     bindless_index: u32,
+    skin_delta: i32,
+    joint_offset: u32,
 }
 
 pub struct CharacterRenderer {
+    pub skin_descriptor_set: vk::DescriptorSet,
+    pub skin_descriptor_set_layout: vk::DescriptorSetLayout,
     pub character_pipeline: vk::Pipeline,
     pub character_pipeline_layout: vk::PipelineLayout,
     pub world: Arc<World>,
@@ -61,6 +65,8 @@ impl CharacterRenderer {
         world: Arc<World>,
         swapchain: &Swapchain,
         character_descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
+        skin_descriptor_set_layout: vk::DescriptorSetLayout,
+        skin_descriptor_set: vk::DescriptorSet,
         resources: Arc<Mutex<Resources>>,
     ) -> Result<Self> {
         let texture_descriptor_set_layout = {
@@ -70,6 +76,7 @@ impl CharacterRenderer {
         let mut character_set_layouts = Vec::new();
         character_set_layouts.extend_from_slice(character_descriptor_set_layouts);
         character_set_layouts.push(texture_descriptor_set_layout);
+        character_set_layouts.push(skin_descriptor_set_layout);
         let character_push_constant_range = if context.use_buffer_device_address {
             vk::PushConstantRange::default()
                 .offset(0)
@@ -174,6 +181,8 @@ impl CharacterRenderer {
         }
 
         Ok(Self {
+            skin_descriptor_set,
+            skin_descriptor_set_layout,
             character_pipeline,
             character_pipeline_layout,
             world,
@@ -190,6 +199,7 @@ impl CharacterRenderer {
         extent: vk::Extent2D,
         swapchain: &Swapchain,
         texture_set: vk::DescriptorSet,
+        scene: &Scene,
     ) {
         unsafe {
             self.context.device.cmd_bind_pipeline(
@@ -216,32 +226,65 @@ impl CharacterRenderer {
                 &[],
             );
 
+            self.context.device.cmd_bind_descriptor_sets(
+                frame.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.character_pipeline_layout,
+                3,
+                &[self.skin_descriptor_set],
+                &[],
+            );
+
             let res = self.resources.lock();
             let geo = res.geometry();
-            let mut items: Vec<DrawItem> = res
-                .meshes
-                .iter()
-                .filter_map(|mesh_tuple| {
-                    let mesh = mesh_tuple.1;
-                    let mat = res.material(mesh.material)?;
-                    let tex = res.texture(mat.base_color)?;
-                    let vpage = geo.vertices.get_page(mesh.vertex_alloc.page as usize);
+            let mut items = Vec::new();
+            for (_, inst) in scene.instances.iter() {
+                if !inst.visible {
+                    continue;
+                }
+                let Some(model) = res.models.get(inst.model) else {
+                    continue;
+                };
 
-                    Some(DrawItem {
+                for &mh in &model.meshes {
+                    let Some(mesh) = res.meshes.get(mh) else {
+                        continue;
+                    };
+                    let Some(mat) = res.material(mesh.material) else {
+                        continue;
+                    };
+                    let Some(tex) = res.texture(mat.base_color) else {
+                        continue;
+                    };
+
+                    let (model_matrix, joint_offset, skin_delta) = match &mesh.skin_alloc {
+                        Some((alloc, skin_idx)) => (
+                            inst.transform,
+                            inst.skin_offsets[*skin_idx],
+                            alloc.offset_units() as i32 - mesh.vertex_alloc.offset_units() as i32,
+                        ),
+                        None => (inst.transform * mesh.transform, u32::MAX, 0),
+                    };
+
+                    items.push(DrawItem {
                         index_page: mesh.index_alloc.page,
                         vertex_page: mesh.vertex_alloc.page,
+                        skin_page: mesh.skin_alloc.as_ref().map(|(a, _)| a.page).unwrap_or(0),
                         first_index: mesh.index_alloc.offset_units(),
                         index_count: mesh.index_alloc.units,
                         vertex_offset: mesh.vertex_alloc.offset_units() as i32,
-                        mesh_transform: mesh.transform,
+                        mesh_transform: model_matrix,
                         bindless_index: tex.bindless_index,
-                    })
-                })
-                .collect();
+                        skin_delta,
+                        joint_offset,
+                    });
+                }
+            }
 
             items.sort_unstable_by_key(|i| (i.index_page, i.vertex_page));
             let mut bound_index_page = u32::MAX;
             let mut bound_vertex_page = u32::MAX;
+
             for item in &items {
                 if item.index_page != bound_index_page {
                     let page = geo.indices.get_page(item.index_page as usize);
@@ -253,18 +296,15 @@ impl CharacterRenderer {
                     );
                     bound_index_page = item.index_page;
                 }
-                let scale = glam::Mat4::from_scale(glam::Vec3 {
-                    x: 20.0,
-                    y: 20.0,
-                    z: 20.0,
-                });
-
                 let page = geo.vertices.get_page(item.vertex_page as usize);
                 if self.context.use_buffer_device_address {
                     let push_constants = CharacterPushConstants {
                         vertex_buffer: page.address().unwrap(),
                         material_id: item.bindless_index,
-                        model: scale.mul_mat4(&item.mesh_transform),
+                        model: item.mesh_transform,
+                        skin_page: item.skin_page,
+                        skin_delta: 0,
+                        joint_offset: 0,
                     };
 
                     self.context.device.cmd_push_constants(
@@ -280,7 +320,10 @@ impl CharacterRenderer {
                 } else {
                     let legacy_push_constants = LegacyCharacterPushConstants {
                         material_id: item.bindless_index,
-                        model: scale.mul_mat4(&item.mesh_transform),
+                        model: item.mesh_transform,
+                        skin_page: item.skin_page,
+                        skin_delta: 0,
+                        joint_offset: 0,
                     };
 
                     self.context.device.cmd_push_constants(
@@ -327,28 +370,6 @@ impl Drop for CharacterRenderer {
             self.context
                 .device
                 .destroy_pipeline(self.character_pipeline, None);
-            /*
-            for model in &mut self.models {
-                for mesh in &mut model.meshes {
-                    self.context
-                        .destroy_buffer(&mut self.allocator.lock(), &mut mesh.vertex_buffer);
-                    self.context
-                        .destroy_buffer(&mut self.allocator.lock(), &mut mesh.index_buffer);
-                }
-
-                model
-                    .materials
-                    .iter_mut()
-                    .map(|material| &mut material.diffuse_texture)
-                    .for_each(|texture| {
-                        Texture::destroy_texture(
-                            self.context.clone(),
-                            &mut self.allocator.lock(),
-                            texture,
-                        );
-                    });
-            }
-            */
         }
     }
 }

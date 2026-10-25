@@ -1,4 +1,4 @@
-use crate::app::engine::{gpu::context::AllocatedImage, resources::{geometry_pool::PoolAlloc, pool::Handle}};
+use crate::app::engine::{gpu::context::AllocatedImage, resources::{data::{Clip, Skeleton, SkinData}, geometry_pool::PoolAlloc, pool::Handle}};
 
 pub struct Texture {
     pub image: AllocatedImage,
@@ -14,6 +14,7 @@ pub struct Material {
 pub struct Mesh {
     pub vertex_alloc: PoolAlloc,
     pub index_alloc: PoolAlloc,
+    pub skin_alloc: Option<(PoolAlloc, usize)>,
     pub material: Handle<Material>,
     pub transform: glam::Mat4,
     pub node: usize,
@@ -25,4 +26,7 @@ pub struct Model {
     pub meshes: Vec<Handle<Mesh>>,
     pub materials: Vec<Handle<Material>>,
     pub textures: Vec<Handle<Texture>>, // only textures created for this model, not defaults
+    pub skeleton: Skeleton,
+    pub skins: Vec<SkinData>,
+    pub clips: Vec<Clip>,
 }

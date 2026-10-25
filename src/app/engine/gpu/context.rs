@@ -149,7 +149,8 @@ impl RenderingContext {
                     instance.get_physical_device_properties2(handle, &mut properties2);
                     let features = instance
                         .get_physical_device_features(handle)
-                        .sampler_anisotropy(true);
+                        .sampler_anisotropy(true)
+                        .robust_buffer_access(false);
                     let memory_properties = instance.get_physical_device_memory_properties(handle);
                     let queue_family_properties =
                         instance.get_physical_device_queue_family_properties(handle);
@@ -232,10 +233,12 @@ impl RenderingContext {
                 .descriptor_indexing(true)
                 .descriptor_binding_storage_image_update_after_bind(true)
                 .descriptor_binding_sampled_image_update_after_bind(true)
+                .descriptor_binding_storage_buffer_update_after_bind(true)
                 .descriptor_binding_variable_descriptor_count(true)
                 .descriptor_binding_partially_bound(true)
                 .runtime_descriptor_array(true)
-                .shader_sampled_image_array_non_uniform_indexing(true);
+                .shader_sampled_image_array_non_uniform_indexing(true)
+                .shader_storage_buffer_array_non_uniform_indexing(true);
             let mut device_info = vk::DeviceCreateInfo::default()
                 .enabled_features(&physical_device.features)
                 .queue_create_infos(&queue_create_infos)

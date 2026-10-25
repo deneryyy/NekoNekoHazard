@@ -51,8 +51,8 @@ impl Engine {
         let context = Arc::new(RenderingContext::new(window.clone())?);
         let resources = Arc::new(Mutex::new(Resources::new(context.clone())?));
         let miku_data = gltf::load_model_glb(
-            "miku",
-            include_bytes!(concat!(env!("OUT_DIR"), "/res/models/hatsune_miku.glb")),
+            "annie",
+            include_bytes!(concat!(env!("OUT_DIR"), "/res/models/annie.glb")),
         )?;
         {
             let mut res = resources.lock();
@@ -153,7 +153,7 @@ impl Engine {
                     let mut player = self.world.player.write();
                     player.tick(delta_time);
                 }
-                self.renderer.render().unwrap();
+                self.renderer.render(delta_time).unwrap();
             }
             WindowEvent::KeyboardInput {
                 device_id,

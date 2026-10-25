@@ -11,12 +11,17 @@ use crate::app::{
     engine::{
         gpu::{
             context::{AllocatedBuffer, RenderingContext},
-            descriptor::{DescriptorAllocator, DescriptorLayoutBuilder, PoolSizeRatio},
+            descriptor::{
+                DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
+            },
             staging::RingStagingBuffer,
             sync::FRAME_OVERLAP,
         },
         renderer::{
-            character_renderer::CharacterRenderer, egui_renderer::EguiRenderer,
+            animation_data::{MAX_JOINTS, SkinDescriptors},
+            character_renderer::CharacterRenderer,
+            egui_renderer::EguiRenderer,
+            scene::Scene,
             swapchain::Swapchain,
         },
         resources::{Resources, pool::Handle},
@@ -25,14 +30,17 @@ use crate::app::{
 };
 use ash::vk::{self, CommandBufferUsageFlags, DescriptorSet, DescriptorSetLayout};
 
+pub mod animation_data;
 pub mod camera;
 pub mod character_renderer;
 pub mod egui_renderer;
+pub mod scene;
 pub mod swapchain;
 
 pub struct Frame {
     character_descriptors: vk::DescriptorSet,
     character_descriptor_layout: vk::DescriptorSetLayout,
+    joint_buffer: AllocatedBuffer,
     toon_params_uniform_buffer: AllocatedBuffer,
     frame_uniform_buffer: AllocatedBuffer,
     in_flight_fence: vk::Fence,
@@ -73,6 +81,8 @@ pub struct Renderer {
     ring_staging_buffer: RingStagingBuffer,
     allocator: Arc<Mutex<Allocator>>,
     world: Arc<World>,
+    scene: Scene,
+    skin_descriptors: SkinDescriptors,
     global_descriptor_allocator: DescriptorAllocator,
     render_finished_semaphores: Vec<vk::Semaphore>,
     frame_number: usize,
@@ -110,6 +120,8 @@ impl Renderer {
             FRAME_OVERLAP as u32 * 2,
             vk::DescriptorPoolCreateFlags::empty(),
         );
+
+        let skin_descriptors = SkinDescriptors::new(context.clone(), resources.clone())?;
 
         unsafe {
             let mut render_finished_semaphores: Vec<vk::Semaphore> =
@@ -166,6 +178,16 @@ impl Renderer {
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
 
+                let joint_buffer_size =
+                    MAX_JOINTS as u64 * std::mem::size_of::<glam::Mat4>() as u64;
+                let joint_buffer = context.create_buffer(
+                    "Joint Buffer",
+                    &mut allocator.lock(),
+                    joint_buffer_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    gpu_allocator::MemoryLocation::CpuToGpu,
+                )?;
+
                 let character_descriptor_layout_builder = DescriptorLayoutBuilder::new()
                     .binding(
                         0,
@@ -180,6 +202,13 @@ impl Renderer {
                         1,
                         vk::ShaderStageFlags::FRAGMENT,
                         vk::DescriptorBindingFlags::empty(),
+                    )
+                    .binding(
+                        2,
+                        vk::DescriptorType::STORAGE_BUFFER,
+                        MAX_JOINTS,
+                        vk::ShaderStageFlags::VERTEX,
+                        vk::DescriptorBindingFlags::empty(),
                     );
 
                 let character_descriptor_layout =
@@ -190,34 +219,33 @@ impl Renderer {
                     character_descriptor_layout,
                     None,
                 )?;
-                let mut desc_writes: Vec<vk::WriteDescriptorSet> = Vec::new();
-                let uniform_desc_info = &[vk::DescriptorBufferInfo::default()
-                    .buffer(frame_uniform_buffer.buffer)
-                    .range(std::mem::size_of::<FrameUniformBufferObject>() as u64)];
-                desc_writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_binding(0)
-                        .dst_set(character_descriptors)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1)
-                        .buffer_info(uniform_desc_info),
-                );
-                let toon_params_desc_info = &[vk::DescriptorBufferInfo::default()
-                    .buffer(toon_params_uniform_buffer.buffer)
-                    .range(std::mem::size_of::<ToonParamsUniformBufferObject>() as u64)];
-                desc_writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_binding(1)
-                        .dst_set(character_descriptors)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1)
-                        .buffer_info(toon_params_desc_info),
-                );
-                context.device.update_descriptor_sets(&desc_writes, &[]);
-
+                DescriptorWriter::new()
+                    .buffer(
+                        0,
+                        vk::DescriptorType::UNIFORM_BUFFER,
+                        frame_uniform_buffer.buffer,
+                        0,
+                        std::mem::size_of::<FrameUniformBufferObject>() as u64,
+                    )
+                    .buffer(
+                        1,
+                        vk::DescriptorType::UNIFORM_BUFFER,
+                        toon_params_uniform_buffer.buffer,
+                        0,
+                        std::mem::size_of::<ToonParamsUniformBufferObject>() as u64,
+                    )
+                    .buffer(
+                        2,
+                        vk::DescriptorType::STORAGE_BUFFER,
+                        joint_buffer.buffer,
+                        0,
+                        vk::WHOLE_SIZE,
+                    )
+                    .update(&context.device, character_descriptors);
                 frames.push(Frame {
                     character_descriptors,
                     character_descriptor_layout,
+                    joint_buffer,
                     toon_params_uniform_buffer,
                     frame_uniform_buffer,
                     image_available_semaphore,
@@ -236,6 +264,23 @@ impl Renderer {
                 let res = resources.lock();
                 (res.bindless.set, res.bindless.layout)
             };
+
+            let mut scene = Scene::new();
+            {
+                let res = resources.lock();
+                for model in res.models.iter() {
+                    scene.spawn(
+                        &res,
+                        model.0,
+                        glam::Mat4::from_scale(glam::Vec3 {
+                            x: 5.0,
+                            y: 5.0,
+                            z: 5.0,
+                        }),
+                    );
+                }
+            }
+
             Ok(Self {
                 egui_renderer,
                 character_renderer: CharacterRenderer::new(
@@ -244,6 +289,8 @@ impl Renderer {
                     world.clone(),
                     &swapchain,
                     &character_descriptor_set_layouts,
+                    skin_descriptors.skin_set_layout,
+                    skin_descriptors.skin_set,
                     resources.clone(),
                 )?,
                 texture_descriptors,
@@ -255,6 +302,8 @@ impl Renderer {
                 )?,
                 allocator: allocator.clone(),
                 world,
+                scene,
+                skin_descriptors,
                 global_descriptor_allocator,
                 render_finished_semaphores,
                 frame_number: 0,
@@ -314,7 +363,7 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self, dt: f32) -> Result<()> {
         unsafe {
             let frame_index = self.frame_number % FRAME_OVERLAP;
             let frame = &self.frames[frame_index];
@@ -324,11 +373,20 @@ impl Renderer {
                 .device
                 .wait_for_fences(&[frame.in_flight_fence], true, u64::MAX)?;
             self.ring_staging_buffer.retire_frame(frame_index);
-            //self.global_descriptor_allocator.reset(&self.context.device)?;
             {
                 let mut res = self.resources.lock();
                 res.bindless
                     .collect(self.frame_number as u64, FRAME_OVERLAP as u64);
+            }
+
+            let joints: &mut [Mat4] = {
+                let ptr = frame.joint_buffer.allocation.mapped_ptr().unwrap().as_ptr() as *mut Mat4;
+                std::slice::from_raw_parts_mut(ptr, MAX_JOINTS as usize)
+            };
+
+            {
+                let res = self.resources.lock();
+                self.scene.prepare_joints(dt, &res, joints);
             }
 
             if self.swapchain.is_dirty {
@@ -432,6 +490,7 @@ impl Renderer {
                 extent,
                 &self.swapchain,
                 self.texture_descriptors,
+                &self.scene,
             );
 
             self.egui_renderer.record_commands(
@@ -573,6 +632,8 @@ impl Drop for Renderer {
                 self.context
                     .device
                     .destroy_command_pool(frame.command_pool, None);
+                self.context
+                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.joint_buffer);
                 self.context.destroy_buffer(
                     &mut self.allocator.lock(),
                     &mut frame.toon_params_uniform_buffer,

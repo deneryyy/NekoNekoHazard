@@ -1,9 +1,10 @@
 use crate::app::engine::resources::data::{
-    MaterialData, MeshData, ModelData, ModelVertex, SkinVertex, TextureData,
+    Channel, Clip, Interp, MaterialData, MeshData, ModelData, ModelVertex, PathKind, Skeleton,
+    SkinData, SkinVertex, TextureData, Trs,
 };
 
 use anyhow::{Context, Result, bail};
-use glam::Mat4;
+use glam::{Mat4, Quat, Vec3, Vec4};
 use gltf::image::Format;
 use tracing::warn;
 
@@ -49,12 +50,18 @@ pub fn load_model_glb(name: &str, bytes: &[u8]) -> Result<ModelData> {
     for node in scene.nodes() {
         collect_meshes(&node, &world, &buffers, &mut meshes);
     }
+    let skeleton = load_skeleton(&document);
+    let skins = load_skins(&document, &buffers);
+    let clips = load_clips(&document, &buffers);
 
     Ok(ModelData {
         name: name.to_string(),
         images,
         materials,
         meshes,
+        skeleton,
+        skins,
+        clips,
     })
 }
 
@@ -183,4 +190,134 @@ fn convert_image(img: gltf::image::Data) -> Result<TextureData> {
         rgba: rgba8,
         srgb: false,
     })
+}
+
+pub fn load_skeleton(doc: &gltf::Document) -> Skeleton {
+    let n = doc.nodes().len();
+    let mut parent = vec![None; n];
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut rest = Vec::with_capacity(n);
+
+    for node in doc.nodes() {
+        let (t, r, s) = node.transform().decomposed();
+        rest.push(Trs {
+            t: Vec3::from(t),
+            r: Quat::from_array(r).normalize(),
+            s: Vec3::from(s),
+        });
+        for c in node.children() {
+            parent[c.index()] = Some(node.index());
+            children[node.index()].push(c.index());
+        }
+    }
+
+    // Depth-first from the roots: a node is always pushed before its children.
+    let mut order = Vec::with_capacity(n);
+    let mut stack: Vec<usize> = (0..n).rev().filter(|&i| parent[i].is_none()).collect();
+    while let Some(i) = stack.pop() {
+        order.push(i);
+        stack.extend(children[i].iter().rev());
+    }
+
+    Skeleton {
+        parent,
+        rest,
+        order,
+    }
+}
+
+pub fn load_skins(doc: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<SkinData> {
+    doc.skins()
+        .map(|skin| {
+            let joints: Vec<usize> = skin.joints().map(|j| j.index()).collect();
+            let reader = skin.reader(|b| Some(&buffers[b.index()]));
+            let mut inverse_bind: Vec<Mat4> = reader
+                .read_inverse_bind_matrices()
+                .map(|it| it.map(|m| Mat4::from_cols_array_2d(&m)).collect())
+                .unwrap_or_default();
+            // The spec allows omitting them (= identity).
+            inverse_bind.resize(joints.len(), Mat4::IDENTITY);
+            SkinData {
+                joints,
+                inverse_bind,
+            }
+        })
+        .collect()
+}
+
+pub fn load_clips(doc: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Clip> {
+    use gltf::animation::util::ReadOutputs;
+
+    doc.animations()
+        .enumerate()
+        .map(|(idx, anim)| {
+            let mut duration = 0.0f32;
+            let mut channels = Vec::new();
+
+            for ch in anim.channels() {
+                let reader = ch.reader(|b| Some(&buffers[b.index()]));
+                let (Some(inputs), Some(outputs)) = (reader.read_inputs(), reader.read_outputs())
+                else {
+                    continue;
+                };
+                let times: Vec<f32> = inputs.collect();
+                if times.is_empty() {
+                    continue;
+                }
+                duration = duration.max(*times.last().unwrap());
+
+                let (path, values): (PathKind, Vec<Vec4>) = match outputs {
+                    ReadOutputs::Translations(it) => (
+                        PathKind::Translation,
+                        it.map(|v| Vec3::from(v).extend(0.0)).collect(),
+                    ),
+                    ReadOutputs::Scales(it) => (
+                        PathKind::Scale,
+                        it.map(|v| Vec3::from(v).extend(0.0)).collect(),
+                    ),
+                    ReadOutputs::Rotations(it) => {
+                        (PathKind::Rotation, it.into_f32().map(Vec4::from).collect())
+                    }
+                    _ => continue, // morph target weights: not supported
+                };
+
+                let interp = match ch.sampler().interpolation() {
+                    gltf::animation::Interpolation::Linear => Interp::Linear,
+                    gltf::animation::Interpolation::Step => Interp::Step,
+                    gltf::animation::Interpolation::CubicSpline => Interp::CubicSpline,
+                };
+
+                // Reject malformed channels instead of panicking while sampling.
+                let expected = if interp == Interp::CubicSpline {
+                    times.len() * 3
+                } else {
+                    times.len()
+                };
+                if values.len() != expected {
+                    tracing::warn!(
+                        "animation channel has {} values, expected {expected}",
+                        values.len()
+                    );
+                    continue;
+                }
+
+                channels.push(Channel {
+                    node: ch.target().node().index(),
+                    path,
+                    interp,
+                    times,
+                    values,
+                });
+            }
+
+            Clip {
+                name: anim
+                    .name()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("clip{idx}")),
+                duration,
+                channels,
+            }
+        })
+        .collect()
 }
