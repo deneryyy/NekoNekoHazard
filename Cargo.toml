@@ -3,6 +3,10 @@ name = "nekohazard"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "nekohazard_android"
+crate-type = ["lib", "cdylib"]
+
 [dependencies]
 anyhow = "1.0.102"
 ash = "0.38.0"
@@ -30,3 +34,22 @@ bytemuck = "1.25.2"
 anyhow = "1.0"
 fs_extra = "1.2"
 glob = "0.3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30", features = ["android-native-activity"] }
+android_logger = "0.14"
+log = "0.4"
+
+[package.metadata.android]
+package = "xyz.nekohazard.nekoengine"
+apk_name = "Nekohazard"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 36
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vulkan.level"
+version = 1
+required = true
