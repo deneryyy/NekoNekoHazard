@@ -46,17 +46,23 @@ impl Engine {
         });
 
         let window = Arc::new(event_loop.create_window(Default::default())?);
-        window.set_cursor_visible(false);
-        window.set_cursor_grab(winit::window::CursorGrabMode::Locked)?;
+        #[cfg(not(target_os = "android"))]
+        {
+            window.set_cursor_visible(false);
+            if let Err(e) = window.set_cursor_grab(winit::window::CursorGrabMode::Locked) {
+                tracing::warn!("Locked cursor grab failed: {e}, trying Confined");
+                window.set_cursor_grab(winit::window::CursorGrabMode::Confined)?;
+            }
+        }
         let context = Arc::new(RenderingContext::new(window.clone())?);
         let resources = Arc::new(Mutex::new(Resources::new(context.clone())?));
-        let miku_data = gltf::load_model_glb(
+        let annie_data = gltf::load_model_glb(
             "annie",
             include_bytes!(concat!(env!("OUT_DIR"), "/res/models/annie.glb")),
         )?;
         {
             let mut res = resources.lock();
-            res.upload_model(miku_data)?;
+            res.upload_model(annie_data)?;
             res.flush()?;
         }
         let renderer = Renderer::new(
@@ -165,7 +171,10 @@ impl Engine {
                     },
                 is_synthetic,
             } => {
-                //self.renderer.process_camera_input(code, key_state);
+            }
+            WindowEvent::Touch(touch) => {
+                let width = self.window.inner_size().width as f64;
+                self.input_manager.touch_controls.write().handle(&touch, width);
             }
             _ => {}
         }

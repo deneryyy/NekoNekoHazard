@@ -1,6 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Ok, Result};
+use ash::ext::debug_utils;
 use ash::vk::{
     self, BufferCreateInfo, CommandBufferUsageFlags, PipelineDepthStencilStateCreateInfo,
     RenderingAttachmentInfo,
@@ -9,6 +10,7 @@ use gpu_allocator::{
     MemoryLocation,
     vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator},
 };
+use std::ffi::{CStr, c_void};
 use tracing::info;
 use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
@@ -40,9 +42,6 @@ pub struct PhysicalDevice {
 
 pub struct Surface {
     pub handle: vk::SurfaceKHR,
-    pub capabilities: vk::SurfaceCapabilitiesKHR,
-    pub formats: Vec<vk::SurfaceFormatKHR>,
-    pub present_modes: Vec<vk::PresentModeKHR>,
 }
 
 #[derive(Default)]
@@ -72,7 +71,9 @@ pub struct RenderingContext {
     pub queue_family_indices: HashSet<u32>,
     pub queue_families: QueueFamilies,
     pub physical_device: PhysicalDevice,
+    pub surface: Surface,
     pub surface_extension: ash::khr::surface::Instance,
+    debug_messenger: Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     pub instance: ash::Instance,
     pub entry: ash::Entry,
 }
@@ -109,26 +110,62 @@ impl RenderingContext {
         ))
     }
 
+    const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
+
     pub fn new(window: Arc<Window>) -> Result<Self> {
         unsafe {
             let raw_display_handle = window.display_handle()?.as_raw();
             let raw_window_handle = window.window_handle()?.as_raw();
 
             let entry = ash::Entry::load()?;
-            let instance = entry.create_instance(
-                &vk::InstanceCreateInfo::default()
-                    .application_info(
-                        &vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_3),
-                    )
-                    .enabled_extension_names(ash_window::enumerate_required_extensions(
-                        raw_display_handle,
-                    )?),
-                None,
-            )?;
+            let want_validation = cfg!(debug_assertions);
+            let layer_available = want_validation
+                && entry
+                    .enumerate_instance_layer_properties()?
+                    .iter()
+                    .any(|l| l.layer_name_as_c_str().ok() == Some(Self::VALIDATION_LAYER));
+            let debug_utils_available = entry
+                .enumerate_instance_extension_properties(None)?
+                .iter()
+                .any(|e| e.extension_name_as_c_str().ok() == Some(debug_utils::NAME));
+
+            if want_validation && !layer_available {
+                tracing::warn!("validation layer requested but not found in the APK");
+            }
+            let use_validation = layer_available && debug_utils_available;
+
+            let mut extensions: Vec<*const std::os::raw::c_char> =
+                ash_window::enumerate_required_extensions(raw_display_handle)?.to_vec();
+            let mut layers: Vec<*const std::os::raw::c_char> = Vec::new();
+            if use_validation {
+                extensions.push(debug_utils::NAME.as_ptr());
+                layers.push(Self::VALIDATION_LAYER.as_ptr());
+            }
+
+            let mut messenger_ci = Self::messenger_info();
+            let app_info = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_3);
+            let mut instance_info = vk::InstanceCreateInfo::default()
+                .application_info(&app_info)
+                .enabled_extension_names(&extensions)
+                .enabled_layer_names(&layers);
+            if use_validation {
+                instance_info = instance_info.push_next(&mut messenger_ci);
+            }
+
+            let instance = entry.create_instance(&instance_info, None)?;
+
+            let debug_messenger = if use_validation {
+                let loader = debug_utils::Instance::new(&entry, &instance);
+                let messenger =
+                    loader.create_debug_utils_messenger(&Self::messenger_info(), None)?;
+                Some((loader, messenger))
+            } else {
+                None
+            };
 
             let surface_extension = ash::khr::surface::Instance::new(&entry, &instance);
 
-            let compatibility_surface = ash_window::create_surface(
+            let surface_handle = ash_window::create_surface(
                 &entry,
                 &instance,
                 raw_display_handle,
@@ -178,13 +215,13 @@ impl RenderingContext {
 
             physical_devices.retain(|device| {
                 surface_extension
-                    .get_physical_device_surface_support(device.handle, 0, compatibility_surface)
+                    .get_physical_device_surface_support(device.handle, 0, surface_handle)
                     .unwrap_or(false)
             });
 
-            surface_extension.destroy_surface(compatibility_surface, None);
-
             let (physical_device, queue_families) = Self::pick_queue_families(physical_devices)?;
+
+            let surface = Surface::new(surface_handle);
 
             let queue_family_indices: HashSet<u32> = HashSet::from([
                 queue_families.graphics,
@@ -292,43 +329,52 @@ impl RenderingContext {
                 queue_family_indices,
                 queue_families,
                 physical_device,
+                surface,
                 surface_extension,
+                debug_messenger,
                 instance,
                 entry,
             })
         }
     }
 
-    pub fn create_surface(&self, window: &Window) -> Result<Surface> {
-        unsafe {
-            let raw_display_handle = window.display_handle()?.as_raw();
-            let raw_window_handle = window.window_handle()?.as_raw();
-
-            let handle = ash_window::create_surface(
-                &self.entry,
-                &self.instance,
-                raw_display_handle,
-                raw_window_handle,
-                None,
-            )?;
-
-            let capabilities = self
-                .surface_extension
-                .get_physical_device_surface_capabilities(self.physical_device.handle, handle)?;
-            let formats = self
-                .surface_extension
-                .get_physical_device_surface_formats(self.physical_device.handle, handle)?;
-            let present_modes = self
-                .surface_extension
-                .get_physical_device_surface_present_modes(self.physical_device.handle, handle)?;
-
-            Ok(Surface {
-                handle,
-                capabilities,
-                formats,
-                present_modes,
-            })
+    unsafe extern "system" fn debug_callback(
+        severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+        ty: vk::DebugUtilsMessageTypeFlagsEXT,
+        data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+        _user: *mut c_void,
+    ) -> vk::Bool32 {
+        let msg = unsafe {
+            let d = &*data;
+            if d.p_message.is_null() {
+                "<null>".into()
+            } else {
+                CStr::from_ptr(d.p_message).to_string_lossy()
+            }
+        };
+        if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+            tracing::error!("[vulkan {ty:?}] {msg}");
+        } else if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+            tracing::warn!("[vulkan {ty:?}] {msg}");
+        } else {
+            tracing::info!("[vulkan {ty:?}] {msg}");
         }
+        vk::FALSE
+    }
+
+    fn messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXT<'static> {
+        vk::DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                    | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                    | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+            )
+            .message_type(
+                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                    | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                    | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+            )
+            .pfn_user_callback(Some(Self::debug_callback))
     }
 
     pub fn create_image(
@@ -569,8 +615,8 @@ impl RenderingContext {
 
     pub fn create_graphics_pipeline<'a>(
         &self,
-        swapchain_extent: vk::Extent2D,
-        swapchain_format: vk::Format,
+        draw_image_extent: vk::Extent2D,
+        draw_image_format: vk::Format,
         depth_format: vk::Format,
         vertex_shader: vk::ShaderModule,
         fragment_shader: vk::ShaderModule,
@@ -605,10 +651,10 @@ impl RenderingContext {
                         .viewport_state(
                             &vk::PipelineViewportStateCreateInfo::default()
                                 .viewports(&[vk::Viewport::default()
-                                    .width(swapchain_extent.width as f32)
-                                    .height(swapchain_extent.height as f32)
+                                    .width(draw_image_extent.width as f32)
+                                    .height(draw_image_extent.height as f32)
                                     .max_depth(1.0)])
-                                .scissors(&[vk::Rect2D::default().extent(swapchain_extent)]),
+                                .scissors(&[vk::Rect2D::default().extent(draw_image_extent)]),
                         )
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::default()
@@ -648,7 +694,7 @@ impl RenderingContext {
                         .render_pass(render_pass.unwrap_or(vk::RenderPass::null()))
                         .push_next(
                             &mut vk::PipelineRenderingCreateInfo::default()
-                                .color_attachment_formats(&[swapchain_format])
+                                .color_attachment_formats(&[draw_image_format])
                                 .depth_attachment_format(depth_format),
                         )],
                     None,
@@ -850,11 +896,49 @@ impl RenderingContext {
 impl Drop for RenderingContext {
     fn drop(&mut self) {
         unsafe {
+            self.surface_extension
+                .destroy_surface(self.surface.handle, None);
             self.device.destroy_fence(self.imm_fence, None);
             self.device
                 .destroy_command_pool(self.imm_command_pool, None);
             self.device.destroy_device(None);
+            if let Some((loader, messenger)) = self.debug_messenger.take() {
+                loader.destroy_debug_utils_messenger(messenger, None);
+            }
             self.instance.destroy_instance(None);
+        }
+    }
+}
+
+impl Surface {
+    pub fn new(handle: vk::SurfaceKHR) -> Self {
+        Self { handle }
+    }
+    pub fn query(
+        &self,
+        context: Arc<RenderingContext>,
+    ) -> Result<(
+        vk::SurfaceCapabilitiesKHR,
+        Vec<vk::SurfaceFormatKHR>,
+        Vec<vk::PresentModeKHR>,
+    )> {
+        unsafe {
+            let capabilities = context
+                .surface_extension
+                .get_physical_device_surface_capabilities(
+                    context.physical_device.handle,
+                    self.handle,
+                )?;
+            let formats = context
+                .surface_extension
+                .get_physical_device_surface_formats(context.physical_device.handle, self.handle)?;
+            let present_modes = context
+                .surface_extension
+                .get_physical_device_surface_present_modes(
+                    context.physical_device.handle,
+                    self.handle,
+                )?;
+            Ok((capabilities, formats, present_modes))
         }
     }
 }

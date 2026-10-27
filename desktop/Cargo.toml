@@ -1,0 +1,11 @@
+[package]
+name = "nekohazard_desktop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nekoengine = { path = "../nekoengine" }
+anyhow = { workspace = true }
+winit = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true } 

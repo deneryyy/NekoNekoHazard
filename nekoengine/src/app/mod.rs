@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ash::vk::EXT_TOOLING_INFO_NAME;
 use winit::application::ApplicationHandler;
 
 use crate::app::engine::Engine;
@@ -13,7 +14,16 @@ pub struct App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.engine = Some(Engine::new(event_loop).unwrap());
+        tracing::info!("resumed (engine exists: {})", self.engine.is_some());
+        match Engine::new(event_loop) {
+            Ok(engine) => {
+                self.engine = Some(engine);
+            }
+            Err(err) => {
+                tracing::error!("error: {}", err);
+                event_loop.exit();
+            }
+        };
     }
 
     fn device_event(
@@ -45,6 +55,7 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        tracing::info!("suspended");
         self.engine = None;
     }
 }

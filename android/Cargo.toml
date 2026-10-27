@@ -1,0 +1,33 @@
+[package]
+name = "nekohazard_android"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nekoengine = { path = "../nekoengine" }
+winit = { workspace = true, features = ["android-native-activity"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true } 
+tracing-android = "0.2.0"
+
+[package.metadata.android]
+package = "xyz.nekohazard.nekoengine"
+apk_name = "Nekohazard"
+build_targets = ["aarch64-linux-android"]
+runtime_libs = "../res/libs"
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 36
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vulkan.level"
+version = 1
+required = true
+
+[package.metadata.android.application.activity]
+orientation = "sensorLandscape"
+config_changes = "orientation|keyboardHidden|screenSize|screenLayout|uiMode"

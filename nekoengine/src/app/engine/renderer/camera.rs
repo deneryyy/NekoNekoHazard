@@ -4,12 +4,12 @@ use winit::keyboard::KeyCode;
 
 pub struct Camera {
     pub position: glam::Vec3,
-    front: glam::Vec3,
-    up: glam::Vec3,
-    right: glam::Vec3,
+    pub front: glam::Vec3,
+    pub up: glam::Vec3,
+    pub right: glam::Vec3,
     world_up: glam::Vec3,
-    yaw: f32,
-    pitch: f32,
+    pub yaw: f32,
+    pub pitch: f32,
     roll: f32,
     movement_speed: f32,
     mouse_sensitivity: f32,
@@ -65,6 +65,10 @@ impl Camera {
         }
 
         self.update_camera_vectors();
+    }
+
+    pub fn process_touch_look() {
+
     }
 
     pub fn process_keys(&mut self, pressed_keys: HashSet<KeyCode>, delta_time: f32) {

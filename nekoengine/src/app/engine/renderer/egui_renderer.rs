@@ -55,7 +55,7 @@ impl EguiRenderer {
 
             let render_mode = if ctx.use_dynamic_rendering {
                 RenderMode::DynamicRendering(DynamicRendering {
-                    color_attachment_format: swapchain.format,
+                    color_attachment_format: swapchain.draw_image.image_format,
                     depth_attachment_format: Some(swapchain.depth_image.image_format),
                     stencil_attachment_format: Some(swapchain.depth_image.image_format),
                 })

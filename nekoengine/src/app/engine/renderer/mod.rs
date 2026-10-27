@@ -111,13 +111,19 @@ impl Renderer {
             allocation_sizes: Default::default(),
         })?));
 
-        let ratios = Vec::from([PoolSizeRatio {
-            ty: vk::DescriptorType::UNIFORM_BUFFER,
-            per_set: 4.0,
-        }]);
+        let ratios = Vec::from([
+            PoolSizeRatio {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                per_set: 2.0,
+            },
+            PoolSizeRatio {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                per_set: MAX_JOINTS as f32,
+            },
+        ]);
         let mut global_descriptor_allocator = DescriptorAllocator::new(
             ratios,
-            FRAME_OVERLAP as u32 * 2,
+            FRAME_OVERLAP as u32,
             vk::DescriptorPoolCreateFlags::empty(),
         );
 
@@ -330,8 +336,7 @@ impl Renderer {
             let player = world.player.read();
             let mut proj = glam::Mat4::perspective_rh(
                 45.0,
-                swapchain.draw_image.extent.width as f32
-                    / swapchain.draw_image.extent.height as f32,
+                swapchain.extent.width as f32 / swapchain.extent.height as f32,
                 0.1,
                 1000.0,
             );
@@ -389,20 +394,20 @@ impl Renderer {
                 self.scene.prepare_joints(dt, &res, joints);
             }
 
+            self.swapchain.check_extent()?;
+
             if self.swapchain.is_dirty {
                 self.swapchain.resize()?;
                 self.swapchain.is_dirty = false;
-            }
-
-            let image_index_result = self
-                .swapchain
-                .acquire_next_image(frame.image_available_semaphore);
-
-            if image_index_result.is_err() {
-                self.swapchain.resize()?;
                 return Ok(());
             }
-            let image_index = image_index_result?;
+
+            let Some(image_index) = self
+                .swapchain
+                .acquire_next_image(frame.image_available_semaphore)?
+            else {
+                return Ok(());
+            };
 
             self.context.device.reset_fences(&[frame.in_flight_fence])?;
 
@@ -453,8 +458,8 @@ impl Renderer {
             );
 
             let extent = vk::Extent2D::default()
-                .width(self.swapchain.draw_image.extent.width)
-                .height(self.swapchain.draw_image.extent.height);
+                .width(self.swapchain.extent.width)
+                .height(self.swapchain.extent.height);
 
             self.context.begin_rendering(
                 frame.command_buffer,

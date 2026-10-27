@@ -13,7 +13,12 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(input_manager: Arc<InputManager>, position: Vec3, camera: Camera, render_distance: u32) -> Self {
+    pub fn new(
+        input_manager: Arc<InputManager>,
+        position: Vec3,
+        camera: Camera,
+        render_distance: u32,
+    ) -> Self {
         Self {
             input_manager,
             position,
@@ -26,5 +31,13 @@ impl Player {
         let pressed_keys: HashSet<KeyCode> = self.input_manager.get_snapshot();
         self.camera.process_keys(pressed_keys, delta_time);
         self.position = self.camera.position;
+
+        let mut touch = self.input_manager.touch_controls.write();
+        let (dx, dy) = touch.take_look_delta();
+        self.camera.process_mouse_movement(dx, dy);
+
+        let (strafe, forward) = touch.move_axis;
+        self.camera.position += self.camera.front * forward;
+        self.camera.position += self.camera.right * strafe;
     }
 }
