@@ -13,6 +13,7 @@ use crate::app::engine::resources::pool::{Handle, Pool};
 use crate::app::engine::resources::types::{Material, Mesh, Model, Texture};
 use crate::app::engine::resources::uploader::Uploader;
 
+pub mod animation;
 pub mod bindless_textures;
 pub mod data;
 pub mod geometry_pool;
@@ -20,9 +21,10 @@ pub mod gltf;
 pub mod pool;
 pub mod types;
 pub mod uploader;
-pub mod animation;
 
 pub struct Resources {
+    pub white_material: Option<Handle<Material>>,
+    pub white_texture: Option<Handle<Texture>>,
     pub textures: Pool<Texture>,
     pub materials: Pool<Material>,
     pub meshes: Pool<Mesh>,
@@ -45,6 +47,8 @@ impl Resources {
             allocation_sizes: Default::default(),
         })?));
         Ok(Self {
+            white_material: None,
+            white_texture: None,
             textures: Pool::new(),
             materials: Pool::new(),
             meshes: Pool::new(),
@@ -56,6 +60,21 @@ impl Resources {
             allocator,
             context: context,
         })
+    }
+
+    pub fn upload_defaults(&mut self) -> Result<()> {
+        self.white_texture = Some(self.upload_texture(TextureData {
+            rgba: vec![255, 255, 255, 255],
+            width: 1,
+            height: 1,
+            srgb: true,
+        })?);
+        self.white_material = Some(self.materials.insert(Material {
+            name: "default".into(),
+            base_color: self.white_texture.unwrap(),
+            base_color_factor: [1.0; 4],
+        }));
+        Ok(())
     }
 
     pub fn upload_texture(&mut self, data: TextureData) -> Result<Handle<Texture>> {
@@ -71,19 +90,29 @@ impl Resources {
         }))
     }
 
-    pub fn upload_material(&mut self, data: MaterialData) -> Result<Handle<Material>> {
-        let tex_index = data.base_color_image.unwrap_or(0);
+    pub fn upload_material(
+        &mut self,
+        data: MaterialData,
+        model_textures: &[Handle<Texture>],
+        missing_texture: Handle<Texture>,
+    ) -> Result<Handle<Material>> {
+        let base_color = match data.base_color_image {
+            None => self.white_texture.unwrap(),
+            Some(i) => model_textures.get(i).copied().unwrap_or(missing_texture),
+        };
         Ok(self.materials.insert(Material {
             name: data.name,
-            base_color: self
-                .textures
-                .get_at_index(tex_index)
-                .expect("Couldn't find texture for material creation"),
+            base_color,
             base_color_factor: data.base_color_factor,
         }))
     }
 
-    pub fn upload_mesh(&mut self, data: MeshData) -> Result<Handle<Mesh>> {
+    pub fn upload_mesh(
+        &mut self,
+        data: MeshData,
+        model_materials: &[Handle<Material>],
+        missing_material: Handle<Material>,
+    ) -> Result<Handle<Mesh>> {
         let vertex_alloc = self
             .geometry_pool
             .vertices
@@ -127,32 +156,40 @@ impl Resources {
             self.geometry_pool.indices.byte_offset(&index_alloc),
             bytemuck::cast_slice(&data.indices),
         )?;
+
+        let material = match data.material {
+            None => self.white_material.unwrap(),
+            Some(i) => model_materials.get(i).copied().unwrap_or(missing_material),
+        };
+
         let mesh = Mesh {
             vertex_alloc,
             index_alloc,
             skin_alloc,
-            material: self
-                .materials
-                .get_at_index(data.material.unwrap_or(0))
-                .expect("Couldn't get material while uploading mesh"),
+            material,
             transform: data.transform,
             node: data.node,
         };
         Ok(self.meshes.insert(mesh))
     }
 
-    pub fn upload_model(&mut self, data: ModelData) -> Result<Handle<Model>> {
-        let mut textures = Vec::new();
+    pub fn upload_model(
+        &mut self,
+        data: ModelData,
+        default_texture: Handle<Texture>,
+        default_material: Handle<Material>,
+    ) -> Result<Handle<Model>> {
+        let mut textures = Vec::with_capacity(data.images.len());
         for texture in data.images {
             textures.push(self.upload_texture(texture)?);
         }
-        let mut materials = Vec::new();
+        let mut materials = Vec::with_capacity(data.materials.len());
         for material in data.materials {
-            materials.push(self.upload_material(material)?);
+            materials.push(self.upload_material(material, &textures, default_texture)?);
         }
-        let mut meshes = Vec::new();
+        let mut meshes = Vec::with_capacity(data.meshes.len());
         for mesh in data.meshes {
-            meshes.push(self.upload_mesh(mesh)?);
+            meshes.push(self.upload_mesh(mesh, &materials, default_material)?);
         }
         Ok(self.models.insert(Model {
             name: data.name,

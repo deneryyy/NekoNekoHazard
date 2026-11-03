@@ -1,6 +1,4 @@
-use std::{
-    collections::HashSet,
-};
+use std::collections::HashSet;
 
 use parking_lot::RwLock;
 use winit::keyboard::KeyCode;
@@ -11,6 +9,7 @@ mod touch;
 
 pub struct InputManager {
     pub pressed_keys: RwLock<HashSet<KeyCode>>,
+    pub mouse_look_delta: RwLock<(f32, f32)>,
     pub touch_controls: RwLock<TouchControls>,
 }
 
@@ -18,7 +17,8 @@ impl InputManager {
     pub fn new() -> Self {
         Self {
             pressed_keys: RwLock::new(HashSet::new()),
-            touch_controls: RwLock::new(TouchControls::default())
+            touch_controls: RwLock::new(TouchControls::default()),
+            mouse_look_delta: RwLock::new((0.0, 0.0)),
         }
     }
 

@@ -1,3 +1,4 @@
+use bevy_ecs::component::Component;
 use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::app::engine::resources::data::{Channel, Clip, Interp, PathKind, Skeleton, SkinData, Trs};
@@ -59,6 +60,7 @@ pub fn apply_clip(clip: &Clip, time: f32, pose: &mut [Trs]) {
     }
 }
 
+#[derive(Component)]
 pub struct Animator {
     pub clip: usize,
     pub time: f32,

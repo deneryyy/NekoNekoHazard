@@ -1,5 +1,5 @@
 [package]
-name = "nekohazard_android"
+name = "nekohazard-android"
 version.workspace = true
 edition.workspace = true
 

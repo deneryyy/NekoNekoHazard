@@ -15,6 +15,7 @@ layout( push_constant ) uniform constants
 	uint skinPage;
 	int skinDelta;
 	uint jointOffset;
+	vec4 baseColorFactor;
 } pc;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
@@ -37,6 +38,7 @@ layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out uint materialId;
 layout(location = 2) out vec3 normal;
 layout(location = 3) out vec3 fragPos;
+layout(location = 4) out vec4 baseColorFactor;
 
 void main() {
 	vec4 pos = vec4(inPos, 1.0);
@@ -56,4 +58,5 @@ void main() {
 	materialId = pc.materialId;
 	normal = mat3(transpose(inverse(pc.model))) * nrm;
 	fragPos = vec3(pc.model * pos);
+	baseColorFactor = pc.baseColorFactor;
 }

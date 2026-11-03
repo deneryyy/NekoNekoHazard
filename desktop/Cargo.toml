@@ -1,5 +1,5 @@
 [package]
-name = "nekohazard_desktop"
+name = "nekohazard-desktop"
 version.workspace = true
 edition.workspace = true
 

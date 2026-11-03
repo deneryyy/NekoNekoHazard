@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["nekoengine", "desktop", "android"]
-default-members = ["nekoengine", "desktop"]
+members = ["nekoengine", "game", "editor", "desktop", "android"]
+default-members = ["nekoengine", "game", "desktop"]
 
 [workspace.package]
 edition = "2024"
@@ -23,7 +23,7 @@ crossbeam-channel = "0.5.15"
 parking_lot = "0.12.5"
 shaderc = "0.10.1"
 gltf = {version = "1.4.1", features = ["extras", "names", "import"]}
-bevy_ecs = "0.20.0"
+bevy_ecs = "0.20.1"
 egui = "0.36.2"
 egui-ash-renderer = { version = "0.13.0", features = ["gpu-allocator"] }
 egui-winit = "0.36.2"

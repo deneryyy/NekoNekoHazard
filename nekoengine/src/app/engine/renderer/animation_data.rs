@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use ash::vk;
-use glam::Mat4;
 use parking_lot::Mutex;
 
 use crate::app::engine::{
     gpu::{
-        context::{AllocatedBuffer, RenderingContext}, descriptor::{
+        context::{RenderingContext}, descriptor::{
             DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
         },
     }, resources::Resources,

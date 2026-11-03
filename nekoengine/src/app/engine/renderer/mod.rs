@@ -1,34 +1,36 @@
-use std::{sync::Arc, u32};
+use std::sync::Arc;
 
 use anyhow::{Ok, Result};
+use bevy_ecs::{
+    component::Component,
+    resource::Resource,
+    system::{Query, Res, ResMut},
+};
 use glam::Mat4;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use parking_lot::Mutex;
-use tracing::info;
 use winit::window::Window;
 
-use crate::app::{
-    engine::{
-        gpu::{
-            context::{AllocatedBuffer, RenderingContext},
-            descriptor::{
-                DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
-            },
-            staging::RingStagingBuffer,
-            sync::FRAME_OVERLAP,
+use crate::app::engine::{
+    Assets, Time,
+    gpu::{
+        context::{AllocatedBuffer, RenderingContext},
+        descriptor::{
+            DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
         },
-        renderer::{
-            animation_data::{MAX_JOINTS, SkinDescriptors},
-            character_renderer::CharacterRenderer,
-            egui_renderer::EguiRenderer,
-            scene::Scene,
-            swapchain::Swapchain,
-        },
-        resources::{Resources, pool::Handle},
+        staging::RingStagingBuffer,
+        sync::FRAME_OVERLAP,
     },
-    game::world::World,
+    renderer::{
+        animation_data::{MAX_JOINTS, SkinDescriptors},
+        camera::{Camera, CameraController, RenderCamera},
+        character_renderer::CharacterRenderer,
+        egui_renderer::EguiRenderer,
+        swapchain::Swapchain,
+    },
+    resources::{Resources, animation::Animator, pool::Handle, types::Model},
 };
-use ash::vk::{self, CommandBufferUsageFlags, DescriptorSet, DescriptorSetLayout};
+use ash::vk::{self, CommandBufferUsageFlags};
 
 pub mod animation_data;
 pub mod camera;
@@ -36,6 +38,39 @@ pub mod character_renderer;
 pub mod egui_renderer;
 pub mod scene;
 pub mod swapchain;
+
+#[derive(Component, Clone, Copy)]
+pub struct Transform {
+    pub translation: glam::Vec3,
+    pub rotation: glam::Quat,
+    pub scale: glam::Vec3,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct GlobalTransform(pub glam::Mat4);
+
+#[derive(Component)]
+pub struct ModelInstance(pub Handle<Model>);
+#[derive(Component)]
+pub struct Visibility(pub bool);
+
+#[derive(Default)]
+pub struct RenderFrame {
+    pub camera: RenderCamera,
+    pub light_pos: glam::Vec3,
+    pub toon_ubo: ToonParamsUniformBufferObject,
+    pub instances: Vec<RenderInstance>,
+    pub joint_matrices: Vec<Mat4>,
+}
+
+pub struct RenderInstance {
+    pub model: Handle<Model>,
+    pub transform: Mat4,
+    pub skin_offsets: Vec<u32>,
+}
+
+#[derive(Resource, Default)]
+pub struct ExtractedFrame(pub RenderFrame);
 
 pub struct Frame {
     character_descriptors: vk::DescriptorSet,
@@ -58,19 +93,20 @@ struct FrameUniformBufferObject {
 }
 
 #[repr(C)]
-struct ToonParamsUniformBufferObject {
-    shadow_tint: glam::Vec4,
-    light_color: glam::Vec4,
-    step_threshold: f32,
-    step_softness: f32,
-    rim_power: f32,
-    rim_strength: f32,
-    rim_edge_0: f32,
-    rim_edge_1: f32,
-    spec_threshold: f32,
-    shininess: f32,
-    spec_strength: f32,
-    _pad: f32,
+#[derive(Default)]
+pub struct ToonParamsUniformBufferObject {
+    pub shadow_tint: glam::Vec4,
+    pub light_color: glam::Vec4,
+    pub step_threshold: f32,
+    pub step_softness: f32,
+    pub rim_power: f32,
+    pub rim_strength: f32,
+    pub rim_edge_0: f32,
+    pub rim_edge_1: f32,
+    pub spec_threshold: f32,
+    pub shininess: f32,
+    pub spec_strength: f32,
+    pub _pad: f32,
 }
 
 pub struct Renderer {
@@ -80,8 +116,6 @@ pub struct Renderer {
     texture_descriptor_set_layout: vk::DescriptorSetLayout,
     ring_staging_buffer: RingStagingBuffer,
     allocator: Arc<Mutex<Allocator>>,
-    world: Arc<World>,
-    scene: Scene,
     skin_descriptors: SkinDescriptors,
     global_descriptor_allocator: DescriptorAllocator,
     render_finished_semaphores: Vec<vk::Semaphore>,
@@ -97,7 +131,6 @@ impl Renderer {
         context: Arc<RenderingContext>,
         window: Arc<Window>,
         resources: Arc<Mutex<Resources>>,
-        world: Arc<World>,
     ) -> Result<Self> {
         let mut swapchain = Swapchain::new(context.clone(), window.clone())?;
         swapchain.resize()?;
@@ -271,28 +304,11 @@ impl Renderer {
                 (res.bindless.set, res.bindless.layout)
             };
 
-            let mut scene = Scene::new();
-            {
-                let res = resources.lock();
-                for model in res.models.iter() {
-                    scene.spawn(
-                        &res,
-                        model.0,
-                        glam::Mat4::from_scale(glam::Vec3 {
-                            x: 5.0,
-                            y: 5.0,
-                            z: 5.0,
-                        }),
-                    );
-                }
-            }
-
             Ok(Self {
                 egui_renderer,
                 character_renderer: CharacterRenderer::new(
                     context.clone(),
                     allocator.clone(),
-                    world.clone(),
                     &swapchain,
                     &character_descriptor_set_layouts,
                     skin_descriptors.skin_set_layout,
@@ -307,8 +323,6 @@ impl Renderer {
                     64 * 1024 * 1024,
                 )?,
                 allocator: allocator.clone(),
-                world,
-                scene,
                 skin_descriptors,
                 global_descriptor_allocator,
                 render_finished_semaphores,
@@ -325,30 +339,98 @@ impl Renderer {
         self.swapchain.resize()
     }
 
-    fn upload_uniform_buffer(
-        world: Arc<World>,
-        swapchain: &Swapchain,
-        frame: &Frame,
-        light_pos: glam::Vec3,
-        toon_ubo: &ToonParamsUniformBufferObject,
+    pub fn extract_instances(
+        q: Query<(
+            &GlobalTransform,
+            &ModelInstance,
+            &Visibility,
+            Option<&Animator>,
+        )>,
+        assets: Res<Assets>,
+        mut out: ResMut<ExtractedFrame>,
     ) {
+        let res = assets.assets.lock();
+        let frame = &mut out.0;
+        frame.instances.clear();
+        frame.joint_matrices.clear();
+
+        for (gt, model_instance, vis, anim) in &q {
+            if !vis.0 {
+                continue;
+            }
+            let Some(model) = res.models.get(model_instance.0) else {
+                continue;
+            };
+
+            let mut offsets = vec![u32::MAX; model.skins.len()];
+            if let Some(anim) = anim {
+                for (s, skin) in model.skins.iter().enumerate() {
+                    let n = skin.joints.len();
+                    let start = frame.joint_matrices.len();
+                    if start + n > MAX_JOINTS as usize {
+                        continue; // buffer full: this skin draws in bind pose
+                    }
+                    frame.joint_matrices.resize(start + n, Mat4::IDENTITY);
+                    anim.write_skin(skin, &mut frame.joint_matrices[start..]);
+                    offsets[s] = start as u32;
+                }
+            }
+            frame.instances.push(RenderInstance {
+                model: model_instance.0,
+                transform: gt.0,
+                skin_offsets: offsets,
+            });
+        }
+    }
+
+    pub fn extract_camera(
+        q: Query<(&CameraController, &Camera, &Transform)>,
+        mut out: ResMut<ExtractedFrame>,
+    ) {
+        for (ctl, cam, transform) in &q {
+            let camera = &mut out.0.camera;
+            camera.yaw = ctl.yaw;
+            camera.pitch = ctl.pitch;
+            camera.position = transform.translation;
+            camera.fov_y = cam.fov_y;
+            camera.near = cam.near;
+            camera.far = cam.far;
+            camera.update_camera_vectors();
+        }
+    }
+
+    pub fn advance_animators(
+        mut q: Query<(&ModelInstance, &mut Animator)>,
+        assets: Res<Assets>,
+        time: Res<Time>,
+    ) {
+        let res = assets.assets.lock();
+        for (mi, mut anim) in &mut q {
+            let Some(model) = res.models.get(mi.0) else {
+                continue;
+            };
+            let a = &mut *anim;
+            a.update(time.dt, &model.skeleton, model.clips.get(a.clip));
+        }
+    }
+
+    fn upload_uniform_buffer(render_frame: &RenderFrame, swapchain: &Swapchain, frame: &Frame) {
         unsafe {
-            let player = world.player.read();
             let mut proj = glam::Mat4::perspective_rh(
-                45.0,
+                render_frame.camera.fov_y.to_radians(),
                 swapchain.extent.width as f32 / swapchain.extent.height as f32,
                 0.1,
                 1000.0,
             );
             proj.y_axis.y *= -1.0;
 
-            let view = player.camera.get_view_matrix();
+            let view = render_frame.camera.get_view_matrix();
 
             let ubo = FrameUniformBufferObject {
                 view,
                 proj,
-                light_pos: light_pos.extend(0.0),
-                cam_pos: player.camera.position.extend(0.0),
+                light_pos: render_frame.light_pos.extend(0.0),
+                cam_pos: render_frame.camera.position.extend(0.0),
             };
             let ubo_ptr = frame
                 .frame_uniform_buffer
@@ -364,11 +446,11 @@ impl Renderer {
                 .mapped_ptr()
                 .unwrap()
                 .as_ptr();
-            std::ptr::copy_nonoverlapping(toon_ubo, toon_ubo_ptr.cast(), 1);
+            std::ptr::copy_nonoverlapping(&render_frame.toon_ubo, toon_ubo_ptr.cast(), 1);
         }
     }
 
-    pub fn render(&mut self, dt: f32) -> Result<()> {
+    pub fn render(&mut self, render_frame: &RenderFrame, dt: f32) -> Result<()> {
         unsafe {
             let frame_index = self.frame_number % FRAME_OVERLAP;
             let frame = &self.frames[frame_index];
@@ -388,13 +470,12 @@ impl Renderer {
                 let ptr = frame.joint_buffer.allocation.mapped_ptr().unwrap().as_ptr() as *mut Mat4;
                 std::slice::from_raw_parts_mut(ptr, MAX_JOINTS as usize)
             };
+            let n = render_frame.joint_matrices.len().min(joints.len());
+            joints[..n].copy_from_slice(&render_frame.joint_matrices[..n]);
 
-            {
-                let res = self.resources.lock();
-                self.scene.prepare_joints(dt, &res, joints);
+            if self.swapchain.check_extent().is_err() {
+                return Ok(());
             }
-
-            self.swapchain.check_extent()?;
 
             if self.swapchain.is_dirty {
                 self.swapchain.resize()?;
@@ -421,13 +502,7 @@ impl Renderer {
                     .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            Self::upload_uniform_buffer(
-                self.world.clone(),
-                &self.swapchain,
-                frame,
-                self.egui_renderer.light_pos,
-                &self.egui_renderer.toon_params,
-            );
+            Self::upload_uniform_buffer(&render_frame, &self.swapchain, frame);
 
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -495,7 +570,7 @@ impl Renderer {
                 extent,
                 &self.swapchain,
                 self.texture_descriptors,
-                &self.scene,
+                render_frame,
             );
 
             self.egui_renderer.record_commands(

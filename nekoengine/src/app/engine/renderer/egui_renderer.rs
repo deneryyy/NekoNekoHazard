@@ -206,7 +206,7 @@ impl EguiRenderer {
         for (id, deltas) in textures_delta.set.drain() {
             for delta in deltas {
                 self.renderer
-                    .set_texture(queue, frame.command_pool, id, &delta);
+                    .set_texture(queue, frame.command_pool, id, &delta)?;
             }
         }
 

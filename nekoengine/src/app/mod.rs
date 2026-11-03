@@ -1,11 +1,8 @@
-use anyhow::Result;
-use ash::vk::EXT_TOOLING_INFO_NAME;
 use winit::application::ApplicationHandler;
 
 use crate::app::engine::Engine;
 
 pub mod engine;
-pub mod game;
 
 #[derive(Default)]
 pub struct App {
@@ -16,7 +13,8 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         tracing::info!("resumed (engine exists: {})", self.engine.is_some());
         match Engine::new(event_loop) {
-            Ok(engine) => {
+            Ok(mut engine) => {
+                engine.run_startup();
                 self.engine = Some(engine);
             }
             Err(err) => {

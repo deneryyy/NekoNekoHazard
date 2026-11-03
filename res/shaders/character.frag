@@ -31,11 +31,12 @@ layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) flat in uint materialId;
 layout(location = 2) in vec3 normal;
 layout(location = 3) in vec3 fragPos;
+layout(location = 4) in vec4 baseColorFactor;
 
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    vec4 tex = texture(sampler2D(uTextures[nonuniformEXT(materialId)], uSampler), fragTexCoord);
+    vec4 tex = texture(sampler2D(uTextures[nonuniformEXT(materialId)], uSampler), fragTexCoord) * baseColorFactor;
     if (tex.a < 0.5) discard;
     vec3 albedo = tex.rgb;
 
@@ -57,13 +58,6 @@ void main() {
     vec3 ambient = albedo * toon.lightColor.a;
 
     // Rim light, kept out of the shadowed side
-    //float rim = pow(1.0 - max(dot(N, V), 0.0), toon.rimPower);
-    //rim = smoothstep(0.5, 0.6, rim) * lit;
-    //vec3 rimCol = rim * toon.rimStrength * toon.lightColor.rgb;
-
-    vec3 Ng = normalize(cross(dFdx(fragPos), dFdy(fragPos)));
-    Ng = faceforward(Ng, -V, Ng);               // orient toward the camera, avoids Y-flip sign issues
-
     float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), toon.rimPower); 
     float ramp = smoothstep(toon.rimEdge0, toon.rimEdge1, fres);
     vec3 rimCol = fres * ramp * albedo * toon.rimStrength;
@@ -75,5 +69,4 @@ void main() {
     vec3 specCol = spec * toon.specStrength * toon.lightColor.rgb;
 
     outColor = vec4(base + ambient + rimCol + specCol, 1.0);
-    //outColor = vec4(vec3(dot(N, Ng) > 0.5 ? 1.0 : 0.0), 1.0);
 }

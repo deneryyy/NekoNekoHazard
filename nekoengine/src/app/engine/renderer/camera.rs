@@ -1,26 +1,41 @@
-use std::collections::HashSet;
+use bevy_ecs::component::Component;
 
-use winit::keyboard::KeyCode;
+#[derive(Component)] pub struct Camera { pub fov_y: f32, pub near: f32, pub far: f32 }
 
-pub struct Camera {
+#[derive(Component)]
+pub struct CameraController { pub yaw: f32, pub pitch: f32 }  
+
+#[derive(Default)]
+pub struct RenderCamera {
     pub position: glam::Vec3,
     pub front: glam::Vec3,
     pub up: glam::Vec3,
     pub right: glam::Vec3,
-    world_up: glam::Vec3,
+    pub world_up: glam::Vec3,
     pub yaw: f32,
     pub pitch: f32,
-    roll: f32,
-    movement_speed: f32,
-    mouse_sensitivity: f32,
-    fov: f32,
+    pub roll: f32,
+    pub movement_speed: f32,
+    pub mouse_sensitivity: f32,
+    pub fov_y: f32,
+    pub near: f32,
+    pub far: f32,
 }
 
 const SENSIVITY: f32 = 0.1;
 const SPEED: f32 = 20.0;
-const FOV: f32 = 90.0;
+const FOV: f32 = 45.0;
+const NEAR: f32 = 0.1;
+const FAR: f32 = 1000.0;
 
-impl Camera {
+impl CameraController {
+    pub fn front(&self) -> glam::Vec3 {
+        let (y, p) = (self.yaw.to_radians(), self.pitch.to_radians());
+        glam::Vec3::new(y.cos() * p.cos(), p.sin(), y.sin() * p.cos()).normalize()
+    }
+}
+
+impl RenderCamera {
     pub fn new(pos: glam::Vec3, up: glam::Vec3, yaw: f32, pitch: f32, roll: f32) -> Self {
         let front = glam::Vec3 {
             x: f32::cos(yaw.to_radians()) * f32::cos(pitch.to_radians()),
@@ -40,7 +55,9 @@ impl Camera {
             roll,
             movement_speed: SPEED,
             mouse_sensitivity: SENSIVITY,
-            fov: FOV,
+            fov_y: FOV,
+            near: NEAR,
+            far: FAR,
         }
     }
 
@@ -48,54 +65,7 @@ impl Camera {
         glam::Mat4::look_at_rh(self.position, self.position + self.front, self.world_up)
     }
 
-    pub fn process_mouse_movement(&mut self, x: f32, y: f32) {
-        self.yaw += x * self.mouse_sensitivity;
-        self.pitch += y * self.mouse_sensitivity * -1.0;
-        if self.pitch > 89.0 {
-            self.pitch = 89.0;
-        }
-        if self.pitch < -89.0 {
-            self.pitch = -89.0;
-        }
-
-        if self.yaw > 360.0 {
-            self.yaw -= 360.0;
-        } else if self.yaw < -360.0 {
-            self.yaw += 360.0;
-        }
-
-        self.update_camera_vectors();
-    }
-
-    pub fn process_touch_look() {
-
-    }
-
-    pub fn process_keys(&mut self, pressed_keys: HashSet<KeyCode>, delta_time: f32) {
-        let mut movement = glam::Vec3::ZERO;
-        let front = self.front.normalize();
-        let right = self.right.normalize();
-
-        for key in pressed_keys {
-            match key {
-                KeyCode::KeyW => movement += front,
-                KeyCode::KeyS => movement -= front,
-                KeyCode::KeyD => movement += right,
-                KeyCode::KeyA => movement -= right,
-                KeyCode::Space => movement += self.world_up,
-                KeyCode::ShiftLeft => movement -= self.world_up,
-                _ => {}
-            }
-        }
-
-        if movement.length_squared() > 0.0 {
-            movement = movement.normalize();
-        }
-
-        self.position += movement * self.movement_speed * delta_time;
-    }
-
-    fn update_camera_vectors(&mut self) {
+    pub fn update_camera_vectors(&mut self) {
         self.front = glam::Vec3 {
             x: f32::cos(self.yaw.to_radians()) * f32::cos(self.pitch.to_radians()),
             y: f32::sin(self.pitch.to_radians()),

@@ -1,0 +1,11 @@
+[package]
+name = "nekoengine_editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nekoengine = { path = "../nekoengine" }
+nekohazard-game = { path = "../game" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true } 

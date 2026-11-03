@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use ash::vk::{self};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::window::Window;
@@ -105,10 +105,6 @@ impl Swapchain {
     pub fn resize(&mut self) -> Result<()> {
         let (caps, formats, present_modes) = self.context.surface.query(self.context.clone())?;
 
-        if self.extent.width == 0 || self.extent.height == 0 {
-            return Ok(());
-        }
-
         self.extent = if caps.current_extent.width != u32::MAX {
             caps.current_extent
         } else {
@@ -122,6 +118,10 @@ impl Swapchain {
                     .clamp(caps.min_image_extent.height, caps.max_image_extent.height),
             }
         };
+
+        if self.extent.width == 0 || self.extent.height == 0 {
+            return Ok(());
+        }
 
         let mut image_count = self.desired_image_count.max(caps.min_image_count);
         if caps.max_image_count > 0 {
@@ -301,6 +301,9 @@ impl Swapchain {
         };
         if caps.current_extent.width != u32::MAX && caps.current_extent != self.extent {
             self.is_dirty = true;
+        }
+        if caps.current_extent.width == 0 || caps.current_extent.height == 0 {
+            bail!("Zero extent!")
         }
         Ok(())
     }

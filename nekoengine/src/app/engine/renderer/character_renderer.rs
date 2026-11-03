@@ -6,14 +6,9 @@ use gpu_allocator::vulkan::Allocator;
 use parking_lot::Mutex;
 use shaderc::ShaderKind;
 
-use crate::app::{
-    engine::{
-        gpu::context::RenderingContext,
-        renderer::{Frame, scene::Scene, swapchain::Swapchain},
-        resources::{self, Resources, data::ModelVertex},
-    },
-    game::world::World,
-};
+use crate::app::engine::{
+        gpu::context::RenderingContext, renderer::{Frame, RenderFrame, scene::Scene, swapchain::Swapchain}, resources::{self, Resources, data::ModelVertex},
+    };
 
 #[repr(C, align(16))]
 struct CharacterPushConstants {
@@ -23,6 +18,7 @@ struct CharacterPushConstants {
     skin_page: u32,
     skin_delta: i32,
     joint_offset: u32,
+    base_color_factor: glam::Vec4,
 }
 
 #[repr(C, align(16))]
@@ -32,6 +28,7 @@ struct LegacyCharacterPushConstants {
     skin_page: u32,
     skin_delta: i32,
     joint_offset: u32,
+    base_color_factor: glam::Vec4,
 }
 
 struct DrawItem {
@@ -45,6 +42,7 @@ struct DrawItem {
     bindless_index: u32,
     skin_delta: i32,
     joint_offset: u32,
+    base_color_factor: glam::Vec4,
 }
 
 pub struct CharacterRenderer {
@@ -52,7 +50,6 @@ pub struct CharacterRenderer {
     pub skin_descriptor_set_layout: vk::DescriptorSetLayout,
     pub character_pipeline: vk::Pipeline,
     pub character_pipeline_layout: vk::PipelineLayout,
-    pub world: Arc<World>,
     pub resources: Arc<Mutex<Resources>>,
     pub allocator: Arc<Mutex<Allocator>>,
     pub context: Arc<RenderingContext>,
@@ -62,7 +59,6 @@ impl CharacterRenderer {
     pub fn new<'a>(
         context: Arc<RenderingContext>,
         allocator: Arc<Mutex<Allocator>>,
-        world: Arc<World>,
         swapchain: &Swapchain,
         character_descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
         skin_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -185,7 +181,6 @@ impl CharacterRenderer {
             skin_descriptor_set_layout,
             character_pipeline,
             character_pipeline_layout,
-            world,
             resources,
             allocator,
             context,
@@ -199,7 +194,7 @@ impl CharacterRenderer {
         extent: vk::Extent2D,
         swapchain: &Swapchain,
         texture_set: vk::DescriptorSet,
-        scene: &Scene,
+        render_frame: &RenderFrame,
     ) {
         unsafe {
             self.context.device.cmd_bind_pipeline(
@@ -238,10 +233,7 @@ impl CharacterRenderer {
             let res = self.resources.lock();
             let geo = res.geometry();
             let mut items = Vec::new();
-            for (_, inst) in scene.instances.iter() {
-                if !inst.visible {
-                    continue;
-                }
+            for inst in render_frame.instances.iter() {
                 let Some(model) = res.models.get(inst.model) else {
                     continue;
                 };
@@ -277,6 +269,7 @@ impl CharacterRenderer {
                         bindless_index: tex.bindless_index,
                         skin_delta,
                         joint_offset,
+                        base_color_factor: glam::Vec4::from_array(mat.base_color_factor),
                     });
                 }
             }
@@ -303,8 +296,9 @@ impl CharacterRenderer {
                         material_id: item.bindless_index,
                         model: item.mesh_transform,
                         skin_page: item.skin_page,
-                        skin_delta: 0,
-                        joint_offset: 0,
+                        skin_delta: item.skin_delta,
+                        joint_offset: item.joint_offset,
+                        base_color_factor: item.base_color_factor,
                     };
 
                     self.context.device.cmd_push_constants(
@@ -322,8 +316,9 @@ impl CharacterRenderer {
                         material_id: item.bindless_index,
                         model: item.mesh_transform,
                         skin_page: item.skin_page,
-                        skin_delta: 0,
-                        joint_offset: 0,
+                        skin_delta: item.skin_delta,
+                        joint_offset: item.joint_offset,
+                        base_color_factor: item.base_color_factor,
                     };
 
                     self.context.device.cmd_push_constants(
