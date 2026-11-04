@@ -4,7 +4,7 @@ use anyhow::Result;
 use ash::vk;
 use parking_lot::Mutex;
 
-use crate::app::engine::{
+use crate::{
     gpu::{
         context::{RenderingContext}, descriptor::{
             DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,

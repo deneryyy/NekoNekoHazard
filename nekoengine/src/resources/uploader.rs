@@ -4,7 +4,7 @@ use gpu_allocator::vulkan::Allocator;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use crate::app::engine::gpu::{
+use crate::gpu::{
     context::{AllocatedImage, RenderingContext},
     staging::RingStagingBuffer,
 };

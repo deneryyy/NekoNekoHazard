@@ -1,9 +1,18 @@
 use bevy_ecs::component::Component;
 
-#[derive(Component)] pub struct Camera { pub fov_y: f32, pub near: f32, pub far: f32 }
+#[derive(Component)]
+pub struct Camera {
+    pub fov_y: f32,
+    pub near: f32,
+    pub far: f32,
+}
 
 #[derive(Component)]
-pub struct CameraController { pub yaw: f32, pub pitch: f32 }  
+pub struct CameraController {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+}
 
 #[derive(Default)]
 pub struct RenderCamera {

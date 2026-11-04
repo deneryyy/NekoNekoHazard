@@ -6,7 +6,7 @@ use gpu_allocator::vulkan::Allocator;
 use parking_lot::Mutex;
 use shaderc::ShaderKind;
 
-use crate::app::engine::{
+use crate::{
         gpu::context::RenderingContext, renderer::{Frame, RenderFrame, scene::Scene, swapchain::Swapchain}, resources::{self, Resources, data::ModelVertex},
     };
 

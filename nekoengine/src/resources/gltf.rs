@@ -1,4 +1,4 @@
-use crate::app::engine::resources::data::{
+use crate::resources::data::{
     Channel, Clip, Interp, MaterialData, MeshData, ModelData, ModelVertex, PathKind, Skeleton,
     SkinData, SkinVertex, TextureData, Trs,
 };

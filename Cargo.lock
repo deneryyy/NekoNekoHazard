@@ -2036,6 +2036,7 @@ name = "nekohazard-android"
 version = "0.1.0"
 dependencies = [
  "nekoengine",
+ "nekohazard-game",
  "tracing",
  "tracing-android",
  "tracing-subscriber",
@@ -2048,6 +2049,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "nekoengine",
+ "nekohazard-game",
  "tracing",
  "tracing-subscriber",
  "winit",
@@ -2058,9 +2060,14 @@ name = "nekohazard-game"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bevy_ecs",
+ "fs_extra",
+ "glam 0.32.1",
+ "glob",
  "nekoengine",
  "tracing",
  "tracing-subscriber",
+ "winit",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use crate::app::engine::{gpu::context::AllocatedImage, resources::{data::{Clip, Skeleton, SkinData}, geometry_pool::PoolAlloc, pool::Handle}};
+use crate::{gpu::context::AllocatedImage, resources::{data::{Clip, Skeleton, SkinData}, geometry_pool::PoolAlloc, pool::Handle}};
 
 pub struct Texture {
     pub image: AllocatedImage,

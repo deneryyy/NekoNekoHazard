@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 nekoengine = { path = "../nekoengine" }
+nekohazard-game = { path = "../game" }
 winit = { workspace = true, features = ["android-native-activity"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true } 

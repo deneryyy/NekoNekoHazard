@@ -7,7 +7,7 @@ use winit::window::Window;
 
 use std::result::Result::Ok as stdOk;
 
-use crate::app::engine::gpu::context::{AllocatedImage, RenderingContext, Surface};
+use crate::gpu::context::{AllocatedImage, RenderingContext, Surface};
 
 pub struct Swapchain {
     allocator: Allocator,

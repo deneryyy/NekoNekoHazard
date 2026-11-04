@@ -9,7 +9,7 @@ use gpu_allocator::{
     vulkan::{Allocator as GpuAllocator, AllocatorCreateDesc},
 };
 
-use crate::app::engine::{
+use crate::{
     gpu::context::{AllocatedBuffer, RenderingContext},
     resources::data::{ModelVertex, SkinVertex},
 };

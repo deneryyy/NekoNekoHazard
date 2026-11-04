@@ -5,13 +5,13 @@ use ash::vk;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use parking_lot::Mutex;
 
-use crate::app::engine::gpu::context::RenderingContext;
-use crate::app::engine::resources::bindless_textures::BindlessTextures;
-use crate::app::engine::resources::data::{MaterialData, MeshData, ModelData, TextureData};
-use crate::app::engine::resources::geometry_pool::{GeometryPool, PoolKind};
-use crate::app::engine::resources::pool::{Handle, Pool};
-use crate::app::engine::resources::types::{Material, Mesh, Model, Texture};
-use crate::app::engine::resources::uploader::Uploader;
+use crate::gpu::context::RenderingContext;
+use crate::resources::bindless_textures::BindlessTextures;
+use crate::resources::data::{MaterialData, MeshData, ModelData, TextureData};
+use crate::resources::geometry_pool::{GeometryPool, PoolKind};
+use crate::resources::pool::{Handle, Pool};
+use crate::resources::types::{Material, Mesh, Model, Texture};
+use crate::resources::uploader::Uploader;
 
 pub mod animation;
 pub mod bindless_textures;

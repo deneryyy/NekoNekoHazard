@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use parking_lot::RwLock;
 use winit::keyboard::KeyCode;
 
-use crate::app::engine::input::touch::TouchControls;
+use crate::input::touch::TouchControls;
 
 mod touch;
 

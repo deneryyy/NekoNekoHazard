@@ -1,7 +1,7 @@
 use bevy_ecs::component::Component;
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec4};
 
-use crate::app::engine::resources::data::{Channel, Clip, Interp, PathKind, Skeleton, SkinData, Trs};
+use crate::resources::data::{Channel, Clip, Interp, PathKind, Skeleton, SkinData, Trs};
 
 pub fn sample(ch: &Channel, t: f32) -> Vec4 {
     let n = ch.times.len();

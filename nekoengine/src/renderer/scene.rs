@@ -1,6 +1,6 @@
 use glam::Mat4;
 
-use crate::app::engine::{
+use crate::{
     gpu::context::AllocatedBuffer,
     renderer::animation_data::MAX_JOINTS,
     resources::{

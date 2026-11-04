@@ -2,7 +2,7 @@ use anyhow::Result;
 use ash::vk;
 use std::sync::Arc;
 
-use crate::app::engine::gpu::{context::RenderingContext, descriptor::DescriptorLayoutBuilder};
+use crate::gpu::{context::RenderingContext, descriptor::DescriptorLayoutBuilder};
 
 pub struct BindlessTextures {
     pub layout: vk::DescriptorSetLayout,

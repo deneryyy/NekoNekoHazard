@@ -7,7 +7,7 @@ use egui_ash_renderer::{DynamicRendering, Options, RenderMode, Renderer, allocat
 use egui_winit::State;
 use winit::{event::WindowEvent, window::Window};
 
-use crate::app::engine::{
+use crate::{
     gpu::context::RenderingContext,
     renderer::{
         self, Frame, ToonParamsUniformBufferObject, swapchain::Swapchain,

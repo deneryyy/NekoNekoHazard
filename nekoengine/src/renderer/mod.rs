@@ -11,7 +11,7 @@ use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use parking_lot::Mutex;
 use winit::window::Window;
 
-use crate::app::engine::{
+use crate::{
     Assets, Time,
     gpu::{
         context::{AllocatedBuffer, RenderingContext},
@@ -384,13 +384,15 @@ impl Renderer {
     }
 
     pub fn extract_camera(
-        q: Query<(&CameraController, &Camera, &Transform)>,
+        q: Query<(&Camera, &Transform)>,
         mut out: ResMut<ExtractedFrame>,
     ) {
-        for (ctl, cam, transform) in &q {
+        for (cam, transform) in &q {
             let camera = &mut out.0.camera;
-            camera.yaw = ctl.yaw;
-            camera.pitch = ctl.pitch;
+            let (yaw, pitch, roll) = transform.rotation.to_euler(glam::EulerRot::YXZ);
+            camera.yaw = yaw.to_degrees();
+            camera.pitch = pitch.to_degrees();
+            camera.roll = roll.to_degrees();
             camera.position = transform.translation;
             camera.fov_y = cam.fov_y;
             camera.near = cam.near;

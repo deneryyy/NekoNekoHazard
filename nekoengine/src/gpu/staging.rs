@@ -4,7 +4,7 @@ use anyhow::{Context, Ok, Result};
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 
-use crate::app::engine::gpu::{
+use crate::gpu::{
     context::{AllocatedBuffer, RenderingContext},
     sync::FRAME_OVERLAP,
 };
