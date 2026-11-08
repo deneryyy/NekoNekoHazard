@@ -9,9 +9,7 @@ use winit::{event::WindowEvent, window::Window};
 
 use crate::{
     gpu::context::RenderingContext,
-    renderer::{
-        self, Frame, ToonParamsUniformBufferObject, swapchain::Swapchain,
-    },
+    renderer::{self, Frame, ToonParamsUniformBufferObject, swapchain::Swapchain},
 };
 
 pub struct EguiRenderer {
@@ -109,11 +107,15 @@ impl EguiRenderer {
         extent: vk::Extent2D,
         queue: vk::Queue,
     ) -> Result<()> {
+        let _main = tracy_client::span!("egui renderer record commands");
         for id in self.textures_to_free.drain() {
             self.renderer.free_texture(id)?;
         }
 
-        let raw_input = self.egui_winit.take_egui_input(&self.window);
+        let raw_input = {
+            let _s = tracy_client::span!("egui take_input");
+            self.egui_winit.take_egui_input(&self.window)
+        };
 
         let egui::FullOutput {
             platform_output,
@@ -121,92 +123,102 @@ impl EguiRenderer {
             shapes,
             pixels_per_point,
             ..
-        } = self.egui_ctx.run_ui(raw_input, |ui| {
-            let ctx = ui.ctx().clone();
+        } = {
+            let _s = tracy_client::span!("egui run_ui");
+            self.egui_ctx.run_ui(raw_input, |ui| {
+                let ctx = ui.ctx().clone();
 
-            egui::Window::new("Settings")
-                .open(&mut self.show_settings) // adds a close button
-                .default_pos([20.0, 20.0])
-                .default_width(260.0)
-                .resizable(true)
-                .collapsible(true)
-                .show(&ctx, |ui| {
-                    ui.heading("Nekohazard Debug");
-                    ui.add(egui::DragValue::new(&mut self.light_pos.x).prefix("light pos x: "));
-                    ui.add(egui::DragValue::new(&mut self.light_pos.y).prefix("light pos y: "));
-                    ui.add(egui::DragValue::new(&mut self.light_pos.z).prefix("light pos z: "));
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.shadow_tint.x)
-                            .prefix("shadow tint r: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.shadow_tint.y)
-                            .prefix("shadow tint g: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.shadow_tint.z)
-                            .prefix("shadow tint b: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.light_color.x)
-                            .prefix("light color r: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.light_color.y)
-                            .prefix("light color b: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.light_color.z)
-                            .prefix("light color g: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.light_color.w)
-                            .prefix("light color a: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.step_threshold)
-                            .prefix("step threshold: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.step_softness)
-                            .prefix("step softness: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.rim_power).prefix("rim power: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.rim_strength)
-                            .prefix("rim strength: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.rim_edge_0)
-                            .prefix("rim edge 0: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.rim_edge_1)
-                            .prefix("rim edge 1: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.spec_threshold)
-                            .prefix("spec threshold: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.shininess).prefix("shininess: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.toon_params.spec_strength)
-                            .prefix("spec strength: "),
-                    );
-                });
-        });
+                egui::Window::new("Settings")
+                    .open(&mut self.show_settings) // adds a close button
+                    .default_pos([20.0, 20.0])
+                    .default_width(260.0)
+                    .resizable(true)
+                    .collapsible(true)
+                    .show(&ctx, |ui| {
+                        ui.heading("Nekohazard Debug");
+                        ui.add(egui::DragValue::new(&mut self.light_pos.x).prefix("light pos x: "));
+                        ui.add(egui::DragValue::new(&mut self.light_pos.y).prefix("light pos y: "));
+                        ui.add(egui::DragValue::new(&mut self.light_pos.z).prefix("light pos z: "));
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.shadow_tint.x)
+                                .prefix("shadow tint r: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.shadow_tint.y)
+                                .prefix("shadow tint g: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.shadow_tint.z)
+                                .prefix("shadow tint b: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.light_color.x)
+                                .prefix("light color r: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.light_color.y)
+                                .prefix("light color b: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.light_color.z)
+                                .prefix("light color g: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.light_color.w)
+                                .prefix("light color a: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.step_threshold)
+                                .prefix("step threshold: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.step_softness)
+                                .prefix("step softness: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.rim_power)
+                                .prefix("rim power: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.rim_strength)
+                                .prefix("rim strength: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.rim_edge_0)
+                                .prefix("rim edge 0: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.rim_edge_1)
+                                .prefix("rim edge 1: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.spec_threshold)
+                                .prefix("spec threshold: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.shininess)
+                                .prefix("shininess: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.toon_params.spec_strength)
+                                .prefix("spec strength: "),
+                        );
+                    });
+            })
+        };
 
-        self.egui_winit
-            .handle_platform_output(&self.window, platform_output);
-
-        for (id, deltas) in textures_delta.set.drain() {
-            for delta in deltas {
-                self.renderer
-                    .set_texture(queue, frame.command_pool, id, &delta)?;
+        {
+            let _s = tracy_client::span!("egui platform_output");
+            self.egui_winit
+                .handle_platform_output(&self.window, platform_output);
+        }
+        {
+            let _s = tracy_client::span!("egui set_texture");
+            for (id, deltas) in textures_delta.set.drain() {
+                for delta in deltas {
+                    self.renderer
+                        .set_texture(queue, frame.command_pool, id, &delta)?;
+                }
             }
         }
 
@@ -214,13 +226,20 @@ impl EguiRenderer {
             self.textures_to_free.insert(id);
         }
 
-        let clipped_primitives = self.egui_ctx.tessellate(shapes, pixels_per_point);
-        self.renderer.cmd_draw(
-            frame.command_buffer,
-            extent,
-            pixels_per_point,
-            &clipped_primitives,
-        )?;
+        let clipped_primitives = {
+            let _s = tracy_client::span!("egui tessellate");
+            self.egui_ctx.tessellate(shapes, pixels_per_point)
+        };
+
+        {
+            let _s = tracy_client::span!("egui cmd_draw");
+            self.renderer.cmd_draw(
+                frame.command_buffer,
+                extent,
+                pixels_per_point,
+                &clipped_primitives,
+            )?;
+        }
         Ok(())
     }
 

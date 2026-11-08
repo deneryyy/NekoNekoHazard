@@ -182,6 +182,7 @@ pub struct Engine {
     resources: Arc<Mutex<Resources>>,
     window: Arc<Window>,
     context: Arc<RenderingContext>,
+    tracy_client: tracy_client::Client,
     app: App,
 }
 
@@ -276,6 +277,7 @@ impl Engine {
         resources.lock().flush()?;
 
         let renderer = Renderer::new(context.clone(), window.clone(), resources.clone())?;
+        let tracy_client = tracy_client::Client::start();
 
         Ok(Self {
             hide_cursor: true,
@@ -285,6 +287,7 @@ impl Engine {
             resources,
             window,
             context,
+            tracy_client,
             app,
         })
     }
@@ -359,10 +362,19 @@ impl Engine {
                 let delta_time = now.duration_since(self.last_frame).as_secs_f32();
                 self.last_frame = now;
                 self.app.world.resource_mut::<Time>().dt = delta_time;
-                self.app.tick();
-                self.renderer
-                    .render(&self.app.world.resource::<ExtractedFrame>().0, delta_time)
-                    .unwrap();
+                let render_frame = &mut self.app.world.resource_mut::<ExtractedFrame>().0;
+                render_frame.light_pos = self.renderer.egui_renderer.light_pos;
+                render_frame.toon_ubo = self.renderer.egui_renderer.toon_params.clone();
+                {
+                    let _s = tracy_client::span!("App tick");
+                    self.app.tick();
+                }
+                {
+                    let _s = tracy_client::span!("Render");
+                    self.renderer
+                        .render(&self.app.world.resource::<ExtractedFrame>().0, delta_time)
+                        .unwrap();
+                }
             }
             WindowEvent::KeyboardInput {
                 device_id,

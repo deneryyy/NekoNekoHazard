@@ -309,6 +309,7 @@ impl Swapchain {
     }
 
     pub fn acquire_next_image(&mut self, sem: vk::Semaphore) -> Result<Option<u32>> {
+        let _s = tracy_client::span!("acquire_next_image");
         match unsafe {
             self.context.swapchain_extension.acquire_next_image(
                 self.handle,

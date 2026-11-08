@@ -24,6 +24,8 @@ egui = { workspace = true }
 egui-ash-renderer = { workspace = true }
 egui-winit = { workspace = true }
 bytemuck = { workspace = true }
+tracy-client = { workspace = true }
+tracing-tracy = { workspace = true }
 
 [build-dependencies]
 anyhow = { workspace = true }

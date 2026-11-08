@@ -59,6 +59,7 @@ pub struct AllocatedBuffer {
 }
 
 pub struct RenderingContext {
+    pub calibrated_timestamps: Option<ash::ext::calibrated_timestamps::Device>,
     pub use_buffer_device_address: bool,
     pub use_dynamic_rendering: bool,
     pub use_sync2: bool,
@@ -261,10 +262,25 @@ impl RenderingContext {
             info!("using dynamic rendering: {}", use_dynamic_rendering);
             info!("using buffer device address: {}", use_buffer_device_address);
 
-            let extension_names = Vec::from([ash::khr::swapchain::NAME.as_ptr()]);
+            let available =
+                instance.enumerate_device_extension_properties(physical_device.handle)?;
+            let has_extension = |name: &CStr| {
+                available
+                    .iter()
+                    .any(|e| e.extension_name_as_c_str().map_or(false, |n| n == name))
+            };
+
+            let use_calibrated_timestamps = has_extension(ash::ext::calibrated_timestamps::NAME);
+            info!("using calibrated timestamps: {}", use_calibrated_timestamps);
+
+            let mut extension_names = Vec::from([ash::khr::swapchain::NAME.as_ptr()]);
+            if use_calibrated_timestamps {
+                extension_names.push(ash::ext::calibrated_timestamps::NAME.as_ptr());
+            }
+
             let mut v13_features = vk::PhysicalDeviceVulkan13Features::default()
-                .dynamic_rendering(true)
-                .synchronization2(true);
+                .dynamic_rendering(use_dynamic_rendering)
+                .synchronization2(use_sync2);
             let mut v12_features = vk::PhysicalDeviceVulkan12Features::default()
                 .buffer_device_address(use_buffer_device_address)
                 .descriptor_indexing(true)
@@ -287,6 +303,8 @@ impl RenderingContext {
             let device = instance.create_device(physical_device.handle, &device_info, None)?;
 
             let swapchain_extension = ash::khr::swapchain::Device::new(&instance, &device);
+            let calibrated_timestamps = use_calibrated_timestamps
+                .then(|| ash::ext::calibrated_timestamps::Device::new(&instance, &device));
 
             let queues = queue_family_indices
                 .iter()
@@ -317,6 +335,7 @@ impl RenderingContext {
             )?;
 
             Ok(Self {
+                calibrated_timestamps,
                 use_buffer_device_address,
                 use_dynamic_rendering,
                 use_sync2,

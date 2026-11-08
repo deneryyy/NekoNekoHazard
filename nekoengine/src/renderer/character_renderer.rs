@@ -7,8 +7,10 @@ use parking_lot::Mutex;
 use shaderc::ShaderKind;
 
 use crate::{
-        gpu::context::RenderingContext, renderer::{Frame, RenderFrame, scene::Scene, swapchain::Swapchain}, resources::{self, Resources, data::ModelVertex},
-    };
+    gpu::context::RenderingContext,
+    renderer::{Frame, RenderFrame, scene::Scene, swapchain::Swapchain},
+    resources::{self, Resources, data::ModelVertex},
+};
 
 #[repr(C, align(16))]
 struct CharacterPushConstants {
@@ -196,6 +198,7 @@ impl CharacterRenderer {
         texture_set: vk::DescriptorSet,
         render_frame: &RenderFrame,
     ) {
+        let _main = tracy_client::span!("character renderer record commands");
         unsafe {
             self.context.device.cmd_bind_pipeline(
                 frame.command_buffer,
@@ -230,127 +233,137 @@ impl CharacterRenderer {
                 &[],
             );
 
+            let mut items = Vec::new();
             let res = self.resources.lock();
             let geo = res.geometry();
-            let mut items = Vec::new();
-            for inst in render_frame.instances.iter() {
-                let Some(model) = res.models.get(inst.model) else {
-                    continue;
-                };
-
-                for &mh in &model.meshes {
-                    let Some(mesh) = res.meshes.get(mh) else {
-                        continue;
-                    };
-                    let Some(mat) = res.material(mesh.material) else {
-                        continue;
-                    };
-                    let Some(tex) = res.texture(mat.base_color) else {
+            {
+                let _s = tracy_client::span!("build draw items");
+                for inst in render_frame.instances.iter() {
+                    let Some(model) = res.models.get(inst.model) else {
                         continue;
                     };
 
-                    let (model_matrix, joint_offset, skin_delta) = match &mesh.skin_alloc {
-                        Some((alloc, skin_idx)) => (
-                            inst.transform,
-                            inst.skin_offsets[*skin_idx],
-                            alloc.offset_units() as i32 - mesh.vertex_alloc.offset_units() as i32,
-                        ),
-                        None => (inst.transform * mesh.transform, u32::MAX, 0),
-                    };
+                    for &mh in &model.meshes {
+                        let Some(mesh) = res.meshes.get(mh) else {
+                            continue;
+                        };
+                        let Some(mat) = res.material(mesh.material) else {
+                            continue;
+                        };
+                        let Some(tex) = res.texture(mat.base_color) else {
+                            continue;
+                        };
 
-                    items.push(DrawItem {
-                        index_page: mesh.index_alloc.page,
-                        vertex_page: mesh.vertex_alloc.page,
-                        skin_page: mesh.skin_alloc.as_ref().map(|(a, _)| a.page).unwrap_or(0),
-                        first_index: mesh.index_alloc.offset_units(),
-                        index_count: mesh.index_alloc.units,
-                        vertex_offset: mesh.vertex_alloc.offset_units() as i32,
-                        mesh_transform: model_matrix,
-                        bindless_index: tex.bindless_index,
-                        skin_delta,
-                        joint_offset,
-                        base_color_factor: glam::Vec4::from_array(mat.base_color_factor),
-                    });
+                        let (model_matrix, joint_offset, skin_delta) = match &mesh.skin_alloc {
+                            Some((alloc, skin_idx)) => (
+                                inst.transform,
+                                inst.skin_offsets[*skin_idx],
+                                alloc.offset_units() as i32
+                                    - mesh.vertex_alloc.offset_units() as i32,
+                            ),
+                            None => (inst.transform * mesh.transform, u32::MAX, 0),
+                        };
+
+                        items.push(DrawItem {
+                            index_page: mesh.index_alloc.page,
+                            vertex_page: mesh.vertex_alloc.page,
+                            skin_page: mesh.skin_alloc.as_ref().map(|(a, _)| a.page).unwrap_or(0),
+                            first_index: mesh.index_alloc.offset_units(),
+                            index_count: mesh.index_alloc.units,
+                            vertex_offset: mesh.vertex_alloc.offset_units() as i32,
+                            mesh_transform: model_matrix,
+                            bindless_index: tex.bindless_index,
+                            skin_delta,
+                            joint_offset,
+                            base_color_factor: glam::Vec4::from_array(mat.base_color_factor),
+                        });
+                    }
                 }
             }
 
-            items.sort_unstable_by_key(|i| (i.index_page, i.vertex_page));
+            {
+                let _s = tracy_client::span!("sort");
+                items.sort_unstable_by_key(|i| (i.index_page, i.vertex_page));
+            }
             let mut bound_index_page = u32::MAX;
             let mut bound_vertex_page = u32::MAX;
 
-            for item in &items {
-                if item.index_page != bound_index_page {
-                    let page = geo.indices.get_page(item.index_page as usize);
-                    self.context.device.cmd_bind_index_buffer(
-                        frame.command_buffer,
-                        page.vk_buffer(),
-                        0,
-                        vk::IndexType::UINT32,
-                    );
-                    bound_index_page = item.index_page;
-                }
-                let page = geo.vertices.get_page(item.vertex_page as usize);
-                if self.context.use_buffer_device_address {
-                    let push_constants = CharacterPushConstants {
-                        vertex_buffer: page.address().unwrap(),
-                        material_id: item.bindless_index,
-                        model: item.mesh_transform,
-                        skin_page: item.skin_page,
-                        skin_delta: item.skin_delta,
-                        joint_offset: item.joint_offset,
-                        base_color_factor: item.base_color_factor,
-                    };
-
-                    self.context.device.cmd_push_constants(
-                        frame.command_buffer,
-                        self.character_pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        std::slice::from_raw_parts(
-                            &push_constants as *const _ as *const u8,
-                            std::mem::size_of::<CharacterPushConstants>(),
-                        ),
-                    );
-                } else {
-                    let legacy_push_constants = LegacyCharacterPushConstants {
-                        material_id: item.bindless_index,
-                        model: item.mesh_transform,
-                        skin_page: item.skin_page,
-                        skin_delta: item.skin_delta,
-                        joint_offset: item.joint_offset,
-                        base_color_factor: item.base_color_factor,
-                    };
-
-                    self.context.device.cmd_push_constants(
-                        frame.command_buffer,
-                        self.character_pipeline_layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        std::slice::from_raw_parts(
-                            &legacy_push_constants as *const _ as *const u8,
-                            std::mem::size_of::<LegacyCharacterPushConstants>(),
-                        ),
-                    );
-
-                    if bound_vertex_page != item.vertex_page {
-                        self.context.device.cmd_bind_vertex_buffers(
+            {
+                let _s = tracy_client::span!("record draws");
+                for item in &items {
+                    if item.index_page != bound_index_page {
+                        let page = geo.indices.get_page(item.index_page as usize);
+                        self.context.device.cmd_bind_index_buffer(
                             frame.command_buffer,
+                            page.vk_buffer(),
                             0,
-                            &[page.vk_buffer()],
-                            &[0],
+                            vk::IndexType::UINT32,
                         );
-                        bound_vertex_page = item.vertex_page;
+                        bound_index_page = item.index_page;
                     }
-                }
+                    let page = geo.vertices.get_page(item.vertex_page as usize);
+                    if self.context.use_buffer_device_address {
+                        let push_constants = CharacterPushConstants {
+                            vertex_buffer: page.address().unwrap(),
+                            material_id: item.bindless_index,
+                            model: item.mesh_transform,
+                            skin_page: item.skin_page,
+                            skin_delta: item.skin_delta,
+                            joint_offset: item.joint_offset,
+                            base_color_factor: item.base_color_factor,
+                        };
 
-                self.context.device.cmd_draw_indexed(
-                    frame.command_buffer,
-                    item.index_count,
-                    1,
-                    item.first_index,
-                    item.vertex_offset,
-                    0,
-                );
+                        self.context.device.cmd_push_constants(
+                            frame.command_buffer,
+                            self.character_pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            std::slice::from_raw_parts(
+                                &push_constants as *const _ as *const u8,
+                                std::mem::size_of::<CharacterPushConstants>(),
+                            ),
+                        );
+                    } else {
+                        let legacy_push_constants = LegacyCharacterPushConstants {
+                            material_id: item.bindless_index,
+                            model: item.mesh_transform,
+                            skin_page: item.skin_page,
+                            skin_delta: item.skin_delta,
+                            joint_offset: item.joint_offset,
+                            base_color_factor: item.base_color_factor,
+                        };
+
+                        self.context.device.cmd_push_constants(
+                            frame.command_buffer,
+                            self.character_pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            std::slice::from_raw_parts(
+                                &legacy_push_constants as *const _ as *const u8,
+                                std::mem::size_of::<LegacyCharacterPushConstants>(),
+                            ),
+                        );
+
+                        if bound_vertex_page != item.vertex_page {
+                            self.context.device.cmd_bind_vertex_buffers(
+                                frame.command_buffer,
+                                0,
+                                &[page.vk_buffer()],
+                                &[0],
+                            );
+                            bound_vertex_page = item.vertex_page;
+                        }
+                    }
+
+                    self.context.device.cmd_draw_indexed(
+                        frame.command_buffer,
+                        item.index_count,
+                        1,
+                        item.first_index,
+                        item.vertex_offset,
+                        0,
+                    );
+                }
             }
         }
     }

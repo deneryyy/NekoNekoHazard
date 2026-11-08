@@ -18,6 +18,7 @@ use crate::{
         descriptor::{
             DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
         },
+        profiler::GpuProfiler,
         staging::RingStagingBuffer,
         sync::FRAME_OVERLAP,
     },
@@ -93,7 +94,7 @@ struct FrameUniformBufferObject {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct ToonParamsUniformBufferObject {
     pub shadow_tint: glam::Vec4,
     pub light_color: glam::Vec4,
@@ -112,6 +113,7 @@ pub struct ToonParamsUniformBufferObject {
 pub struct Renderer {
     pub egui_renderer: EguiRenderer,
     character_renderer: CharacterRenderer,
+    gpu_profiler: GpuProfiler,
     texture_descriptors: vk::DescriptorSet,
     texture_descriptor_set_layout: vk::DescriptorSetLayout,
     ring_staging_buffer: RingStagingBuffer,
@@ -315,6 +317,7 @@ impl Renderer {
                     skin_descriptors.skin_set,
                     resources.clone(),
                 )?,
+                gpu_profiler: GpuProfiler::new(&context, FRAME_OVERLAP)?,
                 texture_descriptors,
                 texture_descriptor_set_layout,
                 ring_staging_buffer: RingStagingBuffer::new(
@@ -349,6 +352,7 @@ impl Renderer {
         assets: Res<Assets>,
         mut out: ResMut<ExtractedFrame>,
     ) {
+        let _s = tracy_client::span!("extract_instances");
         let res = assets.assets.lock();
         let frame = &mut out.0;
         frame.instances.clear();
@@ -383,10 +387,8 @@ impl Renderer {
         }
     }
 
-    pub fn extract_camera(
-        q: Query<(&Camera, &Transform)>,
-        mut out: ResMut<ExtractedFrame>,
-    ) {
+    pub fn extract_camera(q: Query<(&Camera, &Transform)>, mut out: ResMut<ExtractedFrame>) {
+        let _s = tracy_client::span!("extract_camera");
         for (cam, transform) in &q {
             let camera = &mut out.0.camera;
             let (yaw, pitch, roll) = transform.rotation.to_euler(glam::EulerRot::YXZ);
@@ -406,6 +408,7 @@ impl Renderer {
         assets: Res<Assets>,
         time: Res<Time>,
     ) {
+        let _s = tracy_client::span!("advance_animators");
         let res = assets.assets.lock();
         for (mi, mut anim) in &mut q {
             let Some(model) = res.models.get(mi.0) else {
@@ -417,6 +420,7 @@ impl Renderer {
     }
 
     fn upload_uniform_buffer(render_frame: &RenderFrame, swapchain: &Swapchain, frame: &Frame) {
+        let _s = tracy_client::span!("upload_uniform_buffer");
         unsafe {
             let mut proj = glam::Mat4::perspective_rh(
                 render_frame.camera.fov_y.to_radians(),
@@ -457,23 +461,33 @@ impl Renderer {
             let frame_index = self.frame_number % FRAME_OVERLAP;
             let frame = &self.frames[frame_index];
 
-            // Wait until gpu finished rendering last frame
-            self.context
-                .device
-                .wait_for_fences(&[frame.in_flight_fence], true, u64::MAX)?;
+            {
+                let _s = tracy_client::span!("wait_for_fences");
+                // Wait until gpu finished rendering last frame
+                self.context
+                    .device
+                    .wait_for_fences(&[frame.in_flight_fence], true, u64::MAX)?;
+            }
             self.ring_staging_buffer.retire_frame(frame_index);
             {
+                let _s = tracy_client::span!("bindless collect");
                 let mut res = self.resources.lock();
                 res.bindless
                     .collect(self.frame_number as u64, FRAME_OVERLAP as u64);
             }
 
-            let joints: &mut [Mat4] = {
-                let ptr = frame.joint_buffer.allocation.mapped_ptr().unwrap().as_ptr() as *mut Mat4;
-                std::slice::from_raw_parts_mut(ptr, MAX_JOINTS as usize)
-            };
-            let n = render_frame.joint_matrices.len().min(joints.len());
-            joints[..n].copy_from_slice(&render_frame.joint_matrices[..n]);
+            {
+                let _s = tracy_client::span!("joint buffer copy");
+                let joints: &mut [Mat4] = {
+                    let ptr =
+                        frame.joint_buffer.allocation.mapped_ptr().unwrap().as_ptr() as *mut Mat4;
+                    std::slice::from_raw_parts_mut(ptr, MAX_JOINTS as usize)
+                };
+                let n = render_frame.joint_matrices.len().min(joints.len());
+                joints[..n].copy_from_slice(&render_frame.joint_matrices[..n]);
+            }
+            self.gpu_profiler.collect(&self.context.device, frame_index)?;
+            self.gpu_profiler.sync();
 
             if self.swapchain.check_extent().is_err() {
                 return Ok(());
@@ -505,6 +519,8 @@ impl Renderer {
             )?;
 
             Self::upload_uniform_buffer(&render_frame, &self.swapchain, frame);
+            self.gpu_profiler
+                .begin_frame(&self.context.device, frame.command_buffer, frame_index);
 
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -566,6 +582,12 @@ impl Renderer {
                 &[vk::Rect2D::default().extent(extent)],
             );
 
+            let z = self.gpu_profiler.begin_zone(
+                &self.context.device,
+                frame.command_buffer,
+                frame_index,
+                tracy_client::span_location!("characters"),
+            );
             self.character_renderer.record_commands(
                 frame,
                 &self.frames,
@@ -574,12 +596,22 @@ impl Renderer {
                 self.texture_descriptors,
                 render_frame,
             );
+            self.gpu_profiler
+                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
 
+            let z = self.gpu_profiler.begin_zone(
+                &self.context.device,
+                frame.command_buffer,
+                frame_index,
+                tracy_client::span_location!("egui"),
+            );
             self.egui_renderer.record_commands(
                 frame,
                 extent,
                 self.context.queues[self.context.queue_families.graphics as usize],
             )?;
+            self.gpu_profiler
+                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
 
             if self.context.use_dynamic_rendering {
                 self.context.device.cmd_end_rendering(frame.command_buffer);
@@ -648,42 +680,49 @@ impl Renderer {
             let render_finished_semaphore = self.render_finished_semaphores[image_index as usize];
 
             self.ring_staging_buffer.end_frame(frame_index);
-            if self.context.use_sync2 {
-                self.context.device.queue_submit2(
-                    self.context.queues[self.context.queue_families.graphics as usize],
-                    &[vk::SubmitInfo2::default()
-                        .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
-                            .semaphore(frame.image_available_semaphore)
-                            .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT_KHR)])
-                        .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
-                            .semaphore(render_finished_semaphore)
-                            .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])
-                        .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
-                            .command_buffer(frame.command_buffer)])],
-                    frame.in_flight_fence,
-                )?;
-            } else {
-                let wait_semaphores = [frame.image_available_semaphore];
-                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                let signal_semaphores = [render_finished_semaphore];
-                let command_buffers = [frame.command_buffer];
+            {
+                let _s = tracy_client::span!("queue_submit");
+                if self.context.use_sync2 {
+                    self.context.device.queue_submit2(
+                        self.context.queues[self.context.queue_families.graphics as usize],
+                        &[vk::SubmitInfo2::default()
+                            .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                                .semaphore(frame.image_available_semaphore)
+                                .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT_KHR)])
+                            .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                                .semaphore(render_finished_semaphore)
+                                .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])
+                            .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
+                                .command_buffer(frame.command_buffer)])],
+                        frame.in_flight_fence,
+                    )?;
+                } else {
+                    let wait_semaphores = [frame.image_available_semaphore];
+                    let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                    let signal_semaphores = [render_finished_semaphore];
+                    let command_buffers = [frame.command_buffer];
 
-                let submit_info = vk::SubmitInfo::default()
-                    .wait_semaphores(&wait_semaphores)
-                    .wait_dst_stage_mask(&wait_stages)
-                    .signal_semaphores(&signal_semaphores)
-                    .command_buffers(&command_buffers);
+                    let submit_info = vk::SubmitInfo::default()
+                        .wait_semaphores(&wait_semaphores)
+                        .wait_dst_stage_mask(&wait_stages)
+                        .signal_semaphores(&signal_semaphores)
+                        .command_buffers(&command_buffers);
 
-                self.context.device.queue_submit(
-                    self.context.queues[self.context.queue_families.graphics as usize],
-                    &[submit_info],
-                    frame.in_flight_fence,
-                )?;
+                    self.context.device.queue_submit(
+                        self.context.queues[self.context.queue_families.graphics as usize],
+                        &[submit_info],
+                        frame.in_flight_fence,
+                    )?;
+                }
             }
-            self.swapchain
-                .present(image_index, render_finished_semaphore)?;
+            {
+                let _s = tracy_client::span!("present");
+                self.swapchain
+                    .present(image_index, render_finished_semaphore)?;
+            }
 
             self.frame_number += 1;
+            tracy_client::frame_mark();
 
             Ok(())
         }
@@ -726,6 +765,8 @@ impl Drop for Renderer {
                     .device
                     .destroy_descriptor_set_layout(frame.character_descriptor_layout, None);
             });
+
+            self.gpu_profiler.destroy(&self.context.device);
 
             self.global_descriptor_allocator
                 .destroy(&self.context.device);
