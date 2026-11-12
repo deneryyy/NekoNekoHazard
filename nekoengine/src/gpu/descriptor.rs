@@ -40,7 +40,7 @@ impl DescriptorLayoutBuilder {
         self.flags.iter().any(|f| f.contains(vk::DescriptorBindingFlags::UPDATE_AFTER_BIND))
     }
 
-    pub fn build(&self, device: &ash::Device) -> Result<vk::DescriptorSetLayout> {
+    pub fn build(&self, device: &ash::Device, push_descriptor: bool) -> Result<vk::DescriptorSetLayout> {
         let mut flags_info = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
             .binding_flags(&self.flags);
 
@@ -50,6 +50,9 @@ impl DescriptorLayoutBuilder {
 
         if self.has_update_after_bind() {
             info = info.flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL);
+        }
+        if push_descriptor {
+            info = info.flags(vk::DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR_KHR);
         }
         Ok(unsafe { device.create_descriptor_set_layout(&info, None)? })
     }
@@ -66,7 +69,7 @@ impl LayoutCache {
     {
         let key = b.key();
         if let Some(l) = self.map.get(&key) { return Ok(*l); }
-        let l = b.build(device)?;
+        let l = b.build(device, false)?;
         self.map.insert(key, l);
         Ok(l)
     }

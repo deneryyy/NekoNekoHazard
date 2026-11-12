@@ -52,7 +52,7 @@ impl SkinDescriptors {
                     | vk::DescriptorBindingFlags::PARTIALLY_BOUND
                     | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT,
             )
-            .build(&context.device)?;
+            .build(&context.device, false)?;
         let skin_set = descriptor_allocator.allocate(
             &context.device,
             skin_set_layout,

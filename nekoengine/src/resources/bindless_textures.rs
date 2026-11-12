@@ -43,7 +43,7 @@ impl BindlessTextures {
                 uab | vk::DescriptorBindingFlags::PARTIALLY_BOUND
                     | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT,
             )
-            .build(&context.device)?;
+            .build(&context.device, false)?;
 
         let sizes = [
             vk::DescriptorPoolSize {
@@ -152,12 +152,10 @@ impl BindlessTextures {
         Ok(slot)
     }
 
-    /// Schedule a slot for reuse once the GPU can no longer reference it.
     pub fn release(&mut self, slot: u32, current_frame: u64) {
         self.pending.push((current_frame, slot));
     }
 
-    /// Call once per frame after the fence wait. `frames_in_flight` is typically 2 or 3.
     pub fn collect(&mut self, current_frame: u64, frames_in_flight: u64) {
         let free = &mut self.free;
         self.pending.retain(|&(f, s)| {

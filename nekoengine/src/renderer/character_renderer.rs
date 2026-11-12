@@ -8,7 +8,7 @@ use shaderc::ShaderKind;
 
 use crate::{
     gpu::context::RenderingContext,
-    renderer::{Frame, RenderFrame, scene::Scene, swapchain::Swapchain},
+    renderer::{Frame, RenderFrame, swapchain::Swapchain},
     resources::{self, Resources, data::ModelVertex},
 };
 
@@ -48,8 +48,8 @@ struct DrawItem {
 }
 
 pub struct CharacterRenderer {
-    pub skin_descriptor_set: vk::DescriptorSet,
-    pub skin_descriptor_set_layout: vk::DescriptorSetLayout,
+    pub skin_set: vk::DescriptorSet,
+    pub skin_set_layout: vk::DescriptorSetLayout,
     pub character_pipeline: vk::Pipeline,
     pub character_pipeline_layout: vk::PipelineLayout,
     pub resources: Arc<Mutex<Resources>>,
@@ -61,20 +61,20 @@ impl CharacterRenderer {
     pub fn new<'a>(
         context: Arc<RenderingContext>,
         allocator: Arc<Mutex<Allocator>>,
-        swapchain: &Swapchain,
-        character_descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
-        skin_descriptor_set_layout: vk::DescriptorSetLayout,
-        skin_descriptor_set: vk::DescriptorSet,
         resources: Arc<Mutex<Resources>>,
+        swapchain: &Swapchain,
+        frame_set_layouts: &'a [vk::DescriptorSetLayout],
+        skin_set_layout: vk::DescriptorSetLayout,
+        skin_set: vk::DescriptorSet,
     ) -> Result<Self> {
         let texture_descriptor_set_layout = {
             let res = resources.lock();
             res.bindless.layout
         };
         let mut character_set_layouts = Vec::new();
-        character_set_layouts.extend_from_slice(character_descriptor_set_layouts);
+        character_set_layouts.extend_from_slice(frame_set_layouts);
         character_set_layouts.push(texture_descriptor_set_layout);
-        character_set_layouts.push(skin_descriptor_set_layout);
+        character_set_layouts.push(skin_set_layout);
         let character_push_constant_range = if context.use_buffer_device_address {
             vk::PushConstantRange::default()
                 .offset(0)
@@ -179,8 +179,8 @@ impl CharacterRenderer {
         }
 
         Ok(Self {
-            skin_descriptor_set,
-            skin_descriptor_set_layout,
+            skin_set,
+            skin_set_layout,
             character_pipeline,
             character_pipeline_layout,
             resources,
@@ -211,7 +211,7 @@ impl CharacterRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.character_pipeline_layout,
                 0,
-                &[frame.character_descriptors],
+                &[frame.frame_set],
                 &[],
             );
 
@@ -229,7 +229,7 @@ impl CharacterRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.character_pipeline_layout,
                 3,
-                &[self.skin_descriptor_set],
+                &[self.skin_set],
                 &[],
             );
 

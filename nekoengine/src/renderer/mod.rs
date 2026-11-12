@@ -27,6 +27,7 @@ use crate::{
         camera::{Camera, CameraController, RenderCamera},
         character_renderer::CharacterRenderer,
         egui_renderer::EguiRenderer,
+        shadow_renderer::ShadowRenderer,
         swapchain::Swapchain,
     },
     resources::{Resources, animation::Animator, pool::Handle, types::Model},
@@ -37,7 +38,7 @@ pub mod animation_data;
 pub mod camera;
 pub mod character_renderer;
 pub mod egui_renderer;
-pub mod scene;
+pub mod shadow_renderer;
 pub mod swapchain;
 
 #[derive(Component, Clone, Copy)]
@@ -74,8 +75,8 @@ pub struct RenderInstance {
 pub struct ExtractedFrame(pub RenderFrame);
 
 pub struct Frame {
-    character_descriptors: vk::DescriptorSet,
-    character_descriptor_layout: vk::DescriptorSetLayout,
+    frame_set: vk::DescriptorSet,
+    frame_set_layout: vk::DescriptorSetLayout,
     joint_buffer: AllocatedBuffer,
     toon_params_uniform_buffer: AllocatedBuffer,
     frame_uniform_buffer: AllocatedBuffer,
@@ -91,6 +92,7 @@ struct FrameUniformBufferObject {
     proj: glam::Mat4,
     light_pos: glam::Vec4,
     cam_pos: glam::Vec4,
+    light_space_matrix: glam::Mat4,
 }
 
 #[repr(C)]
@@ -111,6 +113,7 @@ pub struct ToonParamsUniformBufferObject {
 }
 
 pub struct Renderer {
+    shadow_renderer: ShadowRenderer,
     pub egui_renderer: EguiRenderer,
     character_renderer: CharacterRenderer,
     gpu_profiler: GpuProfiler,
@@ -229,7 +232,7 @@ impl Renderer {
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
 
-                let character_descriptor_layout_builder = DescriptorLayoutBuilder::new()
+                let frame_set_layout_builder = DescriptorLayoutBuilder::new()
                     .binding(
                         0,
                         vk::DescriptorType::UNIFORM_BUFFER,
@@ -252,12 +255,11 @@ impl Renderer {
                         vk::DescriptorBindingFlags::empty(),
                     );
 
-                let character_descriptor_layout =
-                    character_descriptor_layout_builder.build(&context.device)?;
+                let frame_set_layout = frame_set_layout_builder.build(&context.device, false)?;
 
-                let character_descriptors = global_descriptor_allocator.allocate(
+                let frame_set = global_descriptor_allocator.allocate(
                     &context.device,
-                    character_descriptor_layout,
+                    frame_set_layout,
                     None,
                 )?;
                 DescriptorWriter::new()
@@ -282,10 +284,10 @@ impl Renderer {
                         0,
                         vk::WHOLE_SIZE,
                     )
-                    .update(&context.device, character_descriptors);
+                    .update(&context.device, frame_set);
                 frames.push(Frame {
-                    character_descriptors,
-                    character_descriptor_layout,
+                    frame_set,
+                    frame_set_layout,
                     joint_buffer,
                     toon_params_uniform_buffer,
                     frame_uniform_buffer,
@@ -296,30 +298,42 @@ impl Renderer {
                 });
             }
 
-            let character_descriptor_set_layouts = frames
-                .iter()
-                .map(|frame| return frame.character_descriptor_layout)
-                .collect::<Vec<_>>();
             let egui_renderer = EguiRenderer::new(window.clone(), context.clone(), &swapchain)?;
-            let (texture_descriptors, texture_descriptor_set_layout) = {
+
+            let frame_set_layouts = frames
+                .iter()
+                .map(|frame| return frame.frame_set_layout)
+                .collect::<Vec<_>>();
+
+            let (texture_set, texture_set_layout) = {
                 let res = resources.lock();
                 (res.bindless.set, res.bindless.layout)
             };
 
+            let shadow_renderer = ShadowRenderer::new(
+                context.clone(),
+                allocator.clone(),
+                resources.clone(),
+                &frame_set_layouts,
+                skin_descriptors.skin_set_layout,
+                skin_descriptors.skin_set,
+            )?;
+
             Ok(Self {
+                shadow_renderer,
                 egui_renderer,
                 character_renderer: CharacterRenderer::new(
                     context.clone(),
                     allocator.clone(),
+                    resources.clone(),
                     &swapchain,
-                    &character_descriptor_set_layouts,
+                    &frame_set_layouts,
                     skin_descriptors.skin_set_layout,
                     skin_descriptors.skin_set,
-                    resources.clone(),
                 )?,
                 gpu_profiler: GpuProfiler::new(&context, FRAME_OVERLAP)?,
-                texture_descriptors,
-                texture_descriptor_set_layout,
+                texture_descriptors: texture_set,
+                texture_descriptor_set_layout: texture_set_layout,
                 ring_staging_buffer: RingStagingBuffer::new(
                     context.clone(),
                     &mut allocator.lock(),
@@ -432,11 +446,20 @@ impl Renderer {
 
             let view = render_frame.camera.get_view_matrix();
 
+            let mut light_proj = glam::Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 1.0, 7.5);
+            light_proj.y_axis.y *= -1.0;
+            let light_view = glam::Mat4::look_at_rh(
+                render_frame.light_pos,
+                glam::Vec3::new(0.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 1.0, 0.0),
+            );
+
             let ubo = FrameUniformBufferObject {
                 view,
                 proj,
                 light_pos: render_frame.light_pos.extend(0.0),
                 cam_pos: render_frame.camera.position.extend(0.0),
+                light_space_matrix: light_proj * light_view,
             };
             let ubo_ptr = frame
                 .frame_uniform_buffer
@@ -486,7 +509,8 @@ impl Renderer {
                 let n = render_frame.joint_matrices.len().min(joints.len());
                 joints[..n].copy_from_slice(&render_frame.joint_matrices[..n]);
             }
-            self.gpu_profiler.collect(&self.context.device, frame_index)?;
+            self.gpu_profiler
+                .collect(&self.context.device, frame_index)?;
             self.gpu_profiler.sync();
 
             if self.swapchain.check_extent().is_err() {
@@ -518,9 +542,12 @@ impl Renderer {
                     .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
 
-            Self::upload_uniform_buffer(&render_frame, &self.swapchain, frame);
             self.gpu_profiler
                 .begin_frame(&self.context.device, frame.command_buffer, frame_index);
+
+            Self::upload_uniform_buffer(&render_frame, &self.swapchain, frame);
+
+            self.shadow_renderer.record_commands(frame, &render_frame);
 
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -556,8 +583,8 @@ impl Renderer {
 
             self.context.begin_rendering(
                 frame.command_buffer,
-                self.swapchain.draw_image.image_view,
-                self.swapchain.depth_image.image_view,
+                Some(self.swapchain.draw_image.image_view),
+                Some(self.swapchain.depth_image.image_view),
                 vk::ClearColorValue {
                     float32: [0.0, 0.0, 0.0, 1.0],
                 },
@@ -763,7 +790,7 @@ impl Drop for Renderer {
                     .destroy_buffer(&mut self.allocator.lock(), &mut frame.frame_uniform_buffer);
                 self.context
                     .device
-                    .destroy_descriptor_set_layout(frame.character_descriptor_layout, None);
+                    .destroy_descriptor_set_layout(frame.frame_set_layout, None);
             });
 
             self.gpu_profiler.destroy(&self.context.device);

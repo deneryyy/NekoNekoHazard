@@ -68,19 +68,19 @@ impl Swapchain {
 
         let mut main_render_pass = None;
         if !context.use_dynamic_rendering {
-            main_render_pass = Some(
-                context
-                    .create_main_render_pass(draw_image.image_format, depth_image.image_format)?,
-            );
+            main_render_pass = Some(context.create_render_pass(
+                Some(draw_image.image_format),
+                Some(depth_image.image_format),
+            )?);
         }
 
         let mut framebuffer = None;
         if !context.use_dynamic_rendering {
-            framebuffer = Some(context.create_main_framebuffer(
-                draw_image.image_view,
-                depth_image.image_view,
+            framebuffer = Some(context.create_framebuffer(
+                Some(draw_image.image_view),
+                Some(depth_image.image_view),
                 extent,
-                main_render_pass,
+                main_render_pass.unwrap(),
             )?);
         }
 
@@ -246,11 +246,11 @@ impl Swapchain {
                 Self::create_depth_image(extent_3d, self.context.clone(), &mut self.allocator)?;
 
             if !self.context.use_dynamic_rendering {
-                let fb = self.context.create_main_framebuffer(
-                    self.draw_image.image_view,
-                    self.depth_image.image_view,
+                let fb = self.context.create_framebuffer(
+                    Some(self.draw_image.image_view),
+                    Some(self.depth_image.image_view),
                     self.extent,
-                    self.main_render_pass,
+                    self.main_render_pass.unwrap(),
                 )?;
                 self.framebuffer = Some(fb);
             }
