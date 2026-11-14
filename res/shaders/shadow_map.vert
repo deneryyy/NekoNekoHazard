@@ -14,9 +14,7 @@ layout( push_constant ) uniform constants
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
-	vec4 lightPos;
 	vec4 cameraPos;
-    mat4 lightSpaceMatrix;
 } ubo;
 
 layout(std430, set = 0, binding = 2) readonly buffer Joints { mat4 joints[]; };
@@ -26,7 +24,7 @@ struct SkinVertex {
 	vec4 weights;
 };
 
-layout(std430, set = 2, binding = 0) readonly buffer Skin { SkinVertex v[]; } skinPages[];
+layout(std430, set = 1, binding = 0) readonly buffer Skin { SkinVertex v[]; } skinPages[];
 
 void main() {
     vec4 pos = vec4(inPos, 1.0);
@@ -39,5 +37,5 @@ void main() {
         pos = m * pos;
     }
 
-    gl_Position = ubo.lightSpaceMatrix * pc.model * pos;
+    gl_Position = ubo.proj * ubo.view * pos;
 }

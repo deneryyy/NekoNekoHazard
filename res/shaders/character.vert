@@ -27,6 +27,7 @@ layout( push_constant ) uniform constants
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
+	vec4 cameraPos;
 } ubo;
 
 layout(std430, set = 0, binding = 2) readonly buffer Joints { mat4 joints[]; };
@@ -36,8 +37,7 @@ struct SkinVertex {
 	vec4 weights;
 };
 
-layout(std430, set = 3, binding = 0) readonly buffer Skin { SkinVertex v[]; } skinPages[];
-
+layout(std430, set = 2, binding = 0) readonly buffer Skin { SkinVertex v[]; } skinPages[];
 
 layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out uint materialId;

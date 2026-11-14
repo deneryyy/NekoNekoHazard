@@ -48,6 +48,7 @@ struct DrawItem {
 }
 
 pub struct CharacterRenderer {
+    pub lighting_set_layout: vk::DescriptorSetLayout,
     pub skin_set: vk::DescriptorSet,
     pub skin_set_layout: vk::DescriptorSetLayout,
     pub character_pipeline: vk::Pipeline,
@@ -58,23 +59,25 @@ pub struct CharacterRenderer {
 }
 
 impl CharacterRenderer {
-    pub fn new<'a>(
+    pub fn new(
         context: Arc<RenderingContext>,
         allocator: Arc<Mutex<Allocator>>,
         resources: Arc<Mutex<Resources>>,
         swapchain: &Swapchain,
-        frame_set_layouts: &'a [vk::DescriptorSetLayout],
+        frame_set_layout: vk::DescriptorSetLayout,
+        lighting_set_layout: vk::DescriptorSetLayout,
         skin_set_layout: vk::DescriptorSetLayout,
         skin_set: vk::DescriptorSet,
     ) -> Result<Self> {
-        let texture_descriptor_set_layout = {
+        let texture_set_layout = {
             let res = resources.lock();
             res.bindless.layout
         };
         let mut character_set_layouts = Vec::new();
-        character_set_layouts.extend_from_slice(frame_set_layouts);
-        character_set_layouts.push(texture_descriptor_set_layout);
+        character_set_layouts.push(frame_set_layout);
+        character_set_layouts.push(texture_set_layout);
         character_set_layouts.push(skin_set_layout);
+        character_set_layouts.push(lighting_set_layout);
         let character_push_constant_range = if context.use_buffer_device_address {
             vk::PushConstantRange::default()
                 .offset(0)
@@ -179,6 +182,7 @@ impl CharacterRenderer {
         }
 
         Ok(Self {
+            lighting_set_layout,
             skin_set,
             skin_set_layout,
             character_pipeline,
@@ -219,7 +223,7 @@ impl CharacterRenderer {
                 frame.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.character_pipeline_layout,
-                2,
+                1,
                 &[texture_set],
                 &[],
             );
@@ -228,8 +232,17 @@ impl CharacterRenderer {
                 frame.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.character_pipeline_layout,
-                3,
+                2,
                 &[self.skin_set],
+                &[],
+            );
+
+            self.context.device.cmd_bind_descriptor_sets(
+                frame.command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.character_pipeline_layout,
+                3,
+                &[frame.lighting_set],
                 &[],
             );
 

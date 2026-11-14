@@ -224,7 +224,6 @@ impl Engine {
         let mut app = App::new();
 
         let mut render_frame = RenderFrame::default();
-        render_frame.light_pos = glam::Vec3::new(20.0, 20.0, 20.0);
         render_frame.camera = RenderCamera::new(
             glam::Vec3 {
                 x: 2.0,
@@ -240,20 +239,6 @@ impl Engine {
             -37.0,
             0.0,
         );
-        render_frame.toon_ubo = ToonParamsUniformBufferObject {
-            shadow_tint: glam::Vec4::new(0.6, 0.55, 0.8, 1.0),
-            light_color: glam::Vec4::new(1.0, 1.0, 1.0, 0.1),
-            step_threshold: 0.5,
-            step_softness: 0.03,
-            rim_power: 4.0,
-            rim_strength: 0.4,
-            rim_edge_0: 0.6,
-            rim_edge_1: 0.8,
-            spec_threshold: 0.5,
-            shininess: 32.0,
-            spec_strength: 0.3,
-            _pad: 0.0,
-        };
         app.insert_resource(Time { dt: 0.0 })
             .insert_resource(Assets {
                 assets: resources.clone(),
@@ -267,7 +252,12 @@ impl Engine {
         app.update
             .add_systems(Renderer::advance_animators.in_set(EngineSet::Animate));
         app.update.add_systems(
-            (Renderer::extract_camera, Renderer::extract_instances).in_set(EngineSet::Extract),
+            (
+                Renderer::extract_camera,
+                Renderer::extract_lights,
+                Renderer::extract_instances,
+            )
+                .in_set(EngineSet::Extract),
         );
         for p in plugins {
             p.build(&mut app);
@@ -363,7 +353,6 @@ impl Engine {
                 self.last_frame = now;
                 self.app.world.resource_mut::<Time>().dt = delta_time;
                 let render_frame = &mut self.app.world.resource_mut::<ExtractedFrame>().0;
-                render_frame.light_pos = self.renderer.egui_renderer.light_pos;
                 render_frame.toon_ubo = self.renderer.egui_renderer.toon_params.clone();
                 {
                     let _s = tracy_client::span!("App tick");

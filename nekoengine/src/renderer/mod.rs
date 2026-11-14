@@ -4,7 +4,7 @@ use anyhow::{Ok, Result};
 use bevy_ecs::{
     component::Component,
     resource::Resource,
-    system::{Query, Res, ResMut},
+    system::{Query, Res, ResMut, Single},
 };
 use glam::Mat4;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
@@ -24,9 +24,13 @@ use crate::{
     },
     renderer::{
         animation_data::{MAX_JOINTS, SkinDescriptors},
-        camera::{Camera, CameraController, RenderCamera},
+        camera::{Camera, RenderCamera},
         character_renderer::CharacterRenderer,
         egui_renderer::EguiRenderer,
+        lighting::{
+            DirectionalLight, GpuDirectional, GpuLight, LightingParamsUniformBufferObject,
+            MAX_LIGHTS, PointLight, SpotLight,
+        },
         shadow_renderer::ShadowRenderer,
         swapchain::Swapchain,
     },
@@ -38,6 +42,7 @@ pub mod animation_data;
 pub mod camera;
 pub mod character_renderer;
 pub mod egui_renderer;
+pub mod lighting;
 pub mod shadow_renderer;
 pub mod swapchain;
 
@@ -59,10 +64,11 @@ pub struct Visibility(pub bool);
 #[derive(Default)]
 pub struct RenderFrame {
     pub camera: RenderCamera,
-    pub light_pos: glam::Vec3,
     pub toon_ubo: ToonParamsUniformBufferObject,
     pub instances: Vec<RenderInstance>,
     pub joint_matrices: Vec<Mat4>,
+    pub dir_light: Option<GpuDirectional>,
+    pub lights: Vec<GpuLight>,
 }
 
 pub struct RenderInstance {
@@ -75,11 +81,13 @@ pub struct RenderInstance {
 pub struct ExtractedFrame(pub RenderFrame);
 
 pub struct Frame {
+    lighting_set: vk::DescriptorSet,
     frame_set: vk::DescriptorSet,
-    frame_set_layout: vk::DescriptorSetLayout,
+    lighting_params_uniform_buffer: AllocatedBuffer,
+    lights_buffer: AllocatedBuffer,
     joint_buffer: AllocatedBuffer,
     toon_params_uniform_buffer: AllocatedBuffer,
-    frame_uniform_buffer: AllocatedBuffer,
+    global_uniform_buffer: AllocatedBuffer,
     in_flight_fence: vk::Fence,
     image_available_semaphore: vk::Semaphore,
     command_buffer: vk::CommandBuffer,
@@ -87,12 +95,10 @@ pub struct Frame {
 }
 
 #[repr(C)]
-struct FrameUniformBufferObject {
+struct GlobalUniformBufferObject {
     view: glam::Mat4,
     proj: glam::Mat4,
-    light_pos: glam::Vec4,
     cam_pos: glam::Vec4,
-    light_space_matrix: glam::Mat4,
 }
 
 #[repr(C)]
@@ -117,6 +123,8 @@ pub struct Renderer {
     pub egui_renderer: EguiRenderer,
     character_renderer: CharacterRenderer,
     gpu_profiler: GpuProfiler,
+    lighting_set_layout: vk::DescriptorSetLayout,
+    frame_set_layout: vk::DescriptorSetLayout,
     texture_descriptors: vk::DescriptorSet,
     texture_descriptor_set_layout: vk::DescriptorSetLayout,
     ring_staging_buffer: RingStagingBuffer,
@@ -152,11 +160,11 @@ impl Renderer {
         let ratios = Vec::from([
             PoolSizeRatio {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
-                per_set: 2.0,
+                per_set: 3.0,
             },
             PoolSizeRatio {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                per_set: MAX_JOINTS as f32,
+                per_set: MAX_JOINTS as f32 + MAX_LIGHTS as f32,
             },
         ]);
         let mut global_descriptor_allocator = DescriptorAllocator::new(
@@ -164,6 +172,47 @@ impl Renderer {
             FRAME_OVERLAP as u32,
             vk::DescriptorPoolCreateFlags::empty(),
         );
+
+        let frame_set_layout_builder = DescriptorLayoutBuilder::new()
+            .binding(
+                0,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                1,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                1,
+                vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                2,
+                vk::DescriptorType::STORAGE_BUFFER,
+                MAX_JOINTS,
+                vk::ShaderStageFlags::VERTEX,
+                vk::DescriptorBindingFlags::empty(),
+            );
+        let frame_set_layout = frame_set_layout_builder.build(&context.device, false)?;
+
+        let lighting_set_layout_builder = DescriptorLayoutBuilder::new()
+            .binding(
+                0,
+                vk::DescriptorType::STORAGE_BUFFER,
+                MAX_LIGHTS as u32,
+                vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                1,
+                vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            );
+        let lighting_set_layout = lighting_set_layout_builder.build(&context.device, false)?;
 
         let skin_descriptors = SkinDescriptors::new(context.clone(), resources.clone())?;
 
@@ -206,10 +255,10 @@ impl Renderer {
                     .next()
                     .unwrap();
 
-                let frame_uniform_buffer = context.create_buffer(
-                    "Uniform Buffer",
+                let global_uniform_buffer = context.create_buffer(
+                    "Global Uniform Buffer",
                     &mut allocator.lock(),
-                    std::mem::size_of::<FrameUniformBufferObject>() as u64,
+                    std::mem::size_of::<GlobalUniformBufferObject>() as u64,
                     vk::BufferUsageFlags::UNIFORM_BUFFER,
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
@@ -232,43 +281,40 @@ impl Renderer {
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
 
-                let frame_set_layout_builder = DescriptorLayoutBuilder::new()
-                    .binding(
-                        0,
-                        vk::DescriptorType::UNIFORM_BUFFER,
-                        1,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        vk::DescriptorBindingFlags::empty(),
-                    )
-                    .binding(
-                        1,
-                        vk::DescriptorType::UNIFORM_BUFFER,
-                        1,
-                        vk::ShaderStageFlags::FRAGMENT,
-                        vk::DescriptorBindingFlags::empty(),
-                    )
-                    .binding(
-                        2,
-                        vk::DescriptorType::STORAGE_BUFFER,
-                        MAX_JOINTS,
-                        vk::ShaderStageFlags::VERTEX,
-                        vk::DescriptorBindingFlags::empty(),
-                    );
+                let lights_buffer_size = MAX_LIGHTS as u64 * std::mem::size_of::<GpuLight>() as u64;
+                let lights_buffer = context.create_buffer(
+                    "Lights Buffer",
+                    &mut allocator.lock(),
+                    lights_buffer_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    gpu_allocator::MemoryLocation::CpuToGpu,
+                )?;
 
-                let frame_set_layout = frame_set_layout_builder.build(&context.device, false)?;
+                let lighting_params_uniform_buffer = context.create_buffer(
+                    "Lighting Params Uniform Buffer",
+                    &mut allocator.lock(),
+                    std::mem::size_of::<LightingParamsUniformBufferObject>() as u64,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    gpu_allocator::MemoryLocation::CpuToGpu,
+                )?;
 
                 let frame_set = global_descriptor_allocator.allocate(
                     &context.device,
                     frame_set_layout,
                     None,
                 )?;
+                let lighting_set = global_descriptor_allocator.allocate(
+                    &context.device,
+                    lighting_set_layout,
+                    None,
+                )?;
                 DescriptorWriter::new()
                     .buffer(
                         0,
                         vk::DescriptorType::UNIFORM_BUFFER,
-                        frame_uniform_buffer.buffer,
+                        global_uniform_buffer.buffer,
                         0,
-                        std::mem::size_of::<FrameUniformBufferObject>() as u64,
+                        std::mem::size_of::<GlobalUniformBufferObject>() as u64,
                     )
                     .buffer(
                         1,
@@ -285,12 +331,31 @@ impl Renderer {
                         vk::WHOLE_SIZE,
                     )
                     .update(&context.device, frame_set);
+
+                DescriptorWriter::new()
+                    .buffer(
+                        0,
+                        vk::DescriptorType::STORAGE_BUFFER,
+                        lights_buffer.buffer,
+                        0,
+                        vk::WHOLE_SIZE,
+                    )
+                    .buffer(
+                        1,
+                        vk::DescriptorType::UNIFORM_BUFFER,
+                        lighting_params_uniform_buffer.buffer,
+                        0,
+                        std::mem::size_of::<LightingParamsUniformBufferObject>() as u64,
+                    )
+                    .update(&context.device, lighting_set);
                 frames.push(Frame {
+                    lighting_set,
                     frame_set,
-                    frame_set_layout,
+                    lighting_params_uniform_buffer,
+                    lights_buffer,
                     joint_buffer,
                     toon_params_uniform_buffer,
-                    frame_uniform_buffer,
+                    global_uniform_buffer,
                     image_available_semaphore,
                     in_flight_fence,
                     command_buffer,
@@ -299,11 +364,6 @@ impl Renderer {
             }
 
             let egui_renderer = EguiRenderer::new(window.clone(), context.clone(), &swapchain)?;
-
-            let frame_set_layouts = frames
-                .iter()
-                .map(|frame| return frame.frame_set_layout)
-                .collect::<Vec<_>>();
 
             let (texture_set, texture_set_layout) = {
                 let res = resources.lock();
@@ -314,7 +374,7 @@ impl Renderer {
                 context.clone(),
                 allocator.clone(),
                 resources.clone(),
-                &frame_set_layouts,
+                frame_set_layout,
                 skin_descriptors.skin_set_layout,
                 skin_descriptors.skin_set,
             )?;
@@ -327,11 +387,14 @@ impl Renderer {
                     allocator.clone(),
                     resources.clone(),
                     &swapchain,
-                    &frame_set_layouts,
+                    frame_set_layout,
+                    lighting_set_layout,
                     skin_descriptors.skin_set_layout,
                     skin_descriptors.skin_set,
                 )?,
                 gpu_profiler: GpuProfiler::new(&context, FRAME_OVERLAP)?,
+                lighting_set_layout,
+                frame_set_layout,
                 texture_descriptors: texture_set,
                 texture_descriptor_set_layout: texture_set_layout,
                 ring_staging_buffer: RingStagingBuffer::new(
@@ -417,6 +480,46 @@ impl Renderer {
         }
     }
 
+    pub fn extract_lights(
+        points: Query<(&GlobalTransform, &PointLight)>,
+        spots: Query<(&GlobalTransform, &SpotLight)>,
+        dir: Option<Single<(&GlobalTransform, &DirectionalLight)>>,
+        mut out: ResMut<ExtractedFrame>,
+    ) {
+        let frame = &mut out.0;
+        frame.dir_light = dir.map(|query| {
+            let forward = query.0.0.transform_vector3(glam::Vec3::NEG_Z).normalize();
+            GpuDirectional {
+                color_intensity: query.1.color.extend(query.1.intensity),
+                direction: (-forward).extend(1.0),
+            }
+        });
+        let lights = &mut frame.lights;
+        lights.clear();
+        for (gt, l) in &points {
+            if lights.len() >= lighting::MAX_LIGHTS {
+                break;
+            }
+            lights.push(GpuLight {
+                position_range: gt.0.w_axis.truncate().extend(l.range),
+                color_intensity: l.color.extend(l.intensity),
+                direction_type: glam::Vec4::ZERO,
+                spot_params: glam::Vec4::new(0.0, 0.0, -1.0, 0.0),
+            });
+        }
+        for (gt, l) in &spots {
+            if lights.len() >= lighting::MAX_LIGHTS {
+                break;
+            }
+            let dir = gt.0.transform_vector3(glam::Vec3::NEG_Z).normalize();
+            lights.push(GpuLight {
+                position_range: gt.0.w_axis.truncate().extend(l.range),
+                color_intensity: l.color.extend(l.intensity),
+                direction_type: dir.extend(1.0),
+                spot_params: glam::Vec4::new(l.inner_angle.cos(), l.outer_angle.cos(), -1.0, 0.0),
+            });
+        }
+    }
     pub fn advance_animators(
         mut q: Query<(&ModelInstance, &mut Animator)>,
         assets: Res<Assets>,
@@ -446,23 +549,13 @@ impl Renderer {
 
             let view = render_frame.camera.get_view_matrix();
 
-            let mut light_proj = glam::Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 1.0, 7.5);
-            light_proj.y_axis.y *= -1.0;
-            let light_view = glam::Mat4::look_at_rh(
-                render_frame.light_pos,
-                glam::Vec3::new(0.0, 0.0, 0.0),
-                glam::Vec3::new(0.0, 1.0, 0.0),
-            );
-
-            let ubo = FrameUniformBufferObject {
+            let ubo = GlobalUniformBufferObject {
                 view,
                 proj,
-                light_pos: render_frame.light_pos.extend(0.0),
                 cam_pos: render_frame.camera.position.extend(0.0),
-                light_space_matrix: light_proj * light_view,
             };
             let ubo_ptr = frame
-                .frame_uniform_buffer
+                .global_uniform_buffer
                 .allocation
                 .mapped_ptr()
                 .unwrap()
@@ -476,6 +569,66 @@ impl Renderer {
                 .unwrap()
                 .as_ptr();
             std::ptr::copy_nonoverlapping(&render_frame.toon_ubo, toon_ubo_ptr.cast(), 1);
+
+            let (dir_direction, dir_color_intensity) = match &render_frame.dir_light {
+                Some(d) => (d.direction, d.color_intensity),
+                None => (glam::Vec4::ZERO, glam::Vec4::ZERO), // w = 0 -> shader skips it
+            };
+            let lighting_ubo = LightingParamsUniformBufferObject {
+                inv_proj: proj.inverse(),
+                screen_size: glam::Vec2::new(
+                    swapchain.extent.width as f32,
+                    swapchain.extent.height as f32,
+                ),
+                near: render_frame.camera.near,
+                far: render_frame.camera.far,
+                grid: glam::UVec4 {
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    w: 0,
+                },
+                dir_direction,
+                dir_color_intensity,
+                light_count: render_frame.lights.len() as u32,
+                _pad: [0; 3],
+            };
+            let lighting_ubo_ptr = frame
+                .lighting_params_uniform_buffer
+                .allocation
+                .mapped_ptr()
+                .unwrap()
+                .as_ptr();
+            std::ptr::copy_nonoverlapping(&lighting_ubo, lighting_ubo_ptr.cast(), 1);
+        }
+    }
+
+    fn upload_joints(frame: &Frame, render_frame: &RenderFrame) {
+        unsafe {
+            let _s = tracy_client::span!("upload joint buffer");
+            let joints: &mut [Mat4] = {
+                let ptr = frame.joint_buffer.allocation.mapped_ptr().unwrap().as_ptr() as *mut Mat4;
+                std::slice::from_raw_parts_mut(ptr, MAX_JOINTS as usize)
+            };
+            let n = render_frame.joint_matrices.len().min(joints.len());
+            joints[..n].copy_from_slice(&render_frame.joint_matrices[..n]);
+        }
+    }
+
+    fn upload_lights(frame: &Frame, render_frame: &RenderFrame) {
+        let _s = tracy_client::span!("upload lights");
+        unsafe {
+            let lights = {
+                let ptr = frame
+                    .lights_buffer
+                    .allocation
+                    .mapped_ptr()
+                    .unwrap()
+                    .as_ptr() as *mut GpuLight;
+                std::slice::from_raw_parts_mut(ptr, MAX_LIGHTS)
+            };
+            let n = render_frame.lights.len().min(lights.len());
+            lights[..n].copy_from_slice(&render_frame.lights[..n]);
         }
     }
 
@@ -499,16 +652,9 @@ impl Renderer {
                     .collect(self.frame_number as u64, FRAME_OVERLAP as u64);
             }
 
-            {
-                let _s = tracy_client::span!("joint buffer copy");
-                let joints: &mut [Mat4] = {
-                    let ptr =
-                        frame.joint_buffer.allocation.mapped_ptr().unwrap().as_ptr() as *mut Mat4;
-                    std::slice::from_raw_parts_mut(ptr, MAX_JOINTS as usize)
-                };
-                let n = render_frame.joint_matrices.len().min(joints.len());
-                joints[..n].copy_from_slice(&render_frame.joint_matrices[..n]);
-            }
+            Self::upload_joints(frame, render_frame);
+            Self::upload_lights(frame, render_frame);
+
             self.gpu_profiler
                 .collect(&self.context.device, frame_index)?;
             self.gpu_profiler.sync();
@@ -787,11 +933,20 @@ impl Drop for Renderer {
                     &mut frame.toon_params_uniform_buffer,
                 );
                 self.context
-                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.frame_uniform_buffer);
+                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.global_uniform_buffer);
                 self.context
-                    .device
-                    .destroy_descriptor_set_layout(frame.frame_set_layout, None);
+                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.lights_buffer);
+                self.context.destroy_buffer(
+                    &mut self.allocator.lock(),
+                    &mut frame.lighting_params_uniform_buffer,
+                );
             });
+            self.context
+                .device
+                .destroy_descriptor_set_layout(self.frame_set_layout, None);
+            self.context
+                .device
+                .destroy_descriptor_set_layout(self.lighting_set_layout, None);
 
             self.gpu_profiler.destroy(&self.context.device);
 

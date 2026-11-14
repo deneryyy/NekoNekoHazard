@@ -5,11 +5,13 @@ use bevy_ecs::{
     system::{Commands, Query, Res},
 };
 
+use glam::Vec3;
 use nekoengine::{
     Assets, EngineSet, Input, Plugin, Time,
     renderer::{
         GlobalTransform, ModelInstance, Transform, Visibility,
         camera::{Camera, CameraController},
+        lighting::{DirectionalLight, PointLight, SpotLight},
     },
     resources::{
         animation::Animator,
@@ -41,8 +43,8 @@ pub fn spawn_world(mut commands: Commands, assets: Res<Assets>) -> Result<()> {
         "chito",
         include_bytes!(concat!(env!("OUT_DIR"), "/res/models/chito.glb")),
     )?;
-    let mut annie_model_handle;
-    let mut chito_model_handle;
+    let annie_model_handle;
+    let chito_model_handle;
     {
         let mut res = resources.lock();
         let missing_texture = res.upload_texture(TextureData::decode(
@@ -85,6 +87,38 @@ pub fn spawn_world(mut commands: Commands, assets: Res<Assets>) -> Result<()> {
     }
 
     commands.spawn((
+        PointLight {
+            color: Vec3::new(1.0, 1.0, 1.0),
+            intensity: 0.1,
+            range: 50.0,
+        },
+        GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+            20.0, 20.0, 20.0,
+        ))),
+    ));
+
+    commands.spawn((
+        PointLight {
+            color: Vec3::new(1.0, 1.0, 1.0),
+            intensity: 0.1,
+            range: 50.0,
+        },
+        GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+            -20.0, 20.0, -20.0,
+        ))),
+    ));
+
+    /*
+    commands.spawn((
+        DirectionalLight {
+            color: Vec3::new(1.0, 1.0, 1.0),
+            intensity: 0.8,
+        },
+        GlobalTransform(glam::Mat4::from_rotation_x(15_f32.to_radians())),
+    ));
+    */
+
+    commands.spawn((
         Camera {
             fov_y: 45.0,
             near: 0.1,
@@ -100,17 +134,33 @@ pub fn spawn_world(mut commands: Commands, assets: Res<Assets>) -> Result<()> {
             rotation: glam::Quat::IDENTITY,
             scale: glam::Vec3::new(1.0, 1.0, 1.0),
         },
+        SpotLight {
+            color: glam::Vec3::new(1.0, 1.0, 1.0),
+            intensity: 0.8,
+            inner_angle: 5.0_f32.to_radians(),
+            outer_angle: 10.0_f32.to_radians(),
+            range: 50.0,
+        },
+        GlobalTransform(glam::Mat4::IDENTITY),
     ));
     Ok(())
 }
 
 pub fn player_controller(
-    mut q: Query<(&mut CameraController, &mut Transform), With<Camera>>,
+    mut q: Query<
+        (
+            &mut CameraController,
+            &mut Transform,
+            &mut GlobalTransform,
+            &SpotLight,
+        ),
+        With<Camera>,
+    >,
     input: Res<Input>,
     time: Res<Time>,
 ) {
     let im = &input.input;
-    for (mut ctl, mut tf) in &mut q {
+    for (mut ctl, mut tf, mut gt, spotlight) in &mut q {
         let (dx, dy) = {
             let l = im.mouse_look_delta.read();
             (l.0, l.1)
@@ -148,5 +198,7 @@ pub fn player_controller(
             ctl.pitch.to_radians(),
             ctl.roll.to_radians(),
         );
+        let spot_rot = glam::Quat::from_rotation_arc(glam::Vec3::NEG_Z, front);
+        gt.0 = glam::Mat4::from_rotation_translation(spot_rot, tf.translation);
     }
 }

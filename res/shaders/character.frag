@@ -5,7 +5,6 @@
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
-    vec4 lightPos;
     vec4 camPos;
 } ubo;
 
@@ -24,8 +23,26 @@ layout(set = 0, binding = 1) uniform ToonParams {
     float _pad;
 } toon;
 
-layout(set = 2, binding = 0) uniform sampler uSampler;
-layout(set = 2, binding = 1) uniform texture2D uTextures[];
+layout(set = 1, binding = 0) uniform sampler uSampler;
+layout(set = 1, binding = 1) uniform texture2D uTextures[];
+
+struct Light {
+    vec4 positionRange;
+    vec4 colorIntensity;
+    vec4 directionType;
+    vec4 spotParams;
+};
+layout(std430, set = 3, binding = 0) readonly buffer Lights { Light lights[]; };
+layout(set = 3, binding = 1) uniform LightingParams {
+    mat4 invProj;
+    vec2 screenSize;
+    float near;
+    float far;
+    uvec4 grid;
+    vec4 dirDirection;
+    vec4 dirColorIntensity;
+    uint lightCount;
+} lighting;
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) flat in uint materialId;
@@ -35,38 +52,81 @@ layout(location = 4) in vec4 baseColorFactor;
 
 layout(location = 0) out vec4 outColor;
 
+float attenuation(float dist, float range) {
+    float x = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+    return x * x;
+}
+
+float spotFactor(Light l, vec3 L) {          
+    float cd = dot(-L, l.directionType.xyz);
+    return smoothstep(l.spotParams.y, l.spotParams.x, cd);
+}
+
+float toonRamp(vec3 N, vec3 L) {
+    float ndl = dot(N, L) * 0.5 + 0.5;
+    return smoothstep(toon.stepThreshold - toon.stepSoftness,
+                      toon.stepThreshold + toon.stepSoftness, ndl);
+}
+
+float toonSpec(vec3 N, vec3 V, vec3 L, float lit) {
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), toon.shininess);
+    return step(toon.specThreshold, spec) * lit;
+}
+
+vec3 shadeLight(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 albedo) {
+    float lit = toonRamp(N, L);
+
+    // No shadow tint here: with many lights it would stack up.
+    // The ambient term provides the shadow floor instead.
+    vec3 diffuse = albedo * lit * radiance;
+
+    float spec = toonSpec(N, V, L, lit);
+    return diffuse + spec * toon.specStrength * radiance;
+}
+
 void main() {
     vec4 tex = texture(sampler2D(uTextures[nonuniformEXT(materialId)], uSampler), fragTexCoord) * baseColorFactor;
     if (tex.a < 0.5) discard;
     vec3 albedo = tex.rgb;
 
     vec3 N = normalize(normal);
-    vec3 L = normalize(vec3(ubo.lightPos) - fragPos);
+    vec3 V = normalize(ubo.camPos.xyz - fragPos);
 
-    vec3 V = normalize(vec3(ubo.camPos) - fragPos);
+    // Ambient with tinted shadow color, once
+    vec3 color = albedo * toon.shadowTint.rgb * toon.lightColor.a;
 
-    // Half-Lambert, then a soft step into two tones
-    float ndl = dot(N, L) * 0.5 + 0.5;
-    float lit = smoothstep(toon.stepThreshold - toon.stepSoftness,
-                           toon.stepThreshold + toon.stepSoftness, ndl);
+    if (lighting.dirDirection.w > 0.5) {
+        vec3 L = normalize(lighting.dirDirection.xyz);
+        vec3 radiance = lighting.dirColorIntensity.rgb * lighting.dirColorIntensity.w;
 
-    // Tinted shadow side instead of plain darkening
-    vec3 shadowCol = albedo * toon.shadowTint.rgb;
-    vec3 base = mix(shadowCol, albedo, lit) * toon.lightColor.rgb;
+        float shadow = 1.0; // TODO shadow mapping
+        float lit = toonRamp(N, L) * shadow;
 
-    // Small ambient floor so shadows never go fully dark
-    vec3 ambient = albedo * toon.lightColor.a;
+        // The one light that uses tinted shadow instead of plain darkening
+        color += mix(albedo * toon.shadowTint.rgb, albedo, lit) * radiance;
+        color += toonSpec(N, V, L, lit) * toon.specStrength * radiance;
+    }
 
-    // Rim light, kept out of the shadowed side
-    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), toon.rimPower); 
+    for (uint i = 0u; i < lighting.lightCount; i++) {
+        Light l = lights[i];
+        vec3 toL = l.positionRange.xyz - fragPos;
+        float dist = length(toL);
+        float range = l.positionRange.w;
+        if (dist >= range) continue;
+
+        vec3 L = toL / dist;
+        float att = attenuation(dist, range);
+        if (l.directionType.w > 0.5) att *= spotFactor(l, L);
+
+        vec3 radiance = l.colorIntensity.rgb * l.colorIntensity.w * att;
+        color += shadeLight(N, V, L, radiance, albedo);
+    }
+
+    // Rim, once
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), toon.rimPower);
     float ramp = smoothstep(toon.rimEdge0, toon.rimEdge1, fres);
-    vec3 rimCol = fres * ramp * albedo * toon.rimStrength;
+    color += fres * ramp * albedo * toon.rimStrength;
 
-    // Hard-edged stylized specular
-    vec3 H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), toon.shininess);
-    spec = step(toon.specThreshold, spec) * lit;
-    vec3 specCol = spec * toon.specStrength * toon.lightColor.rgb;
-
-    outColor = vec4(base + ambient + rimCol + specCol, 1.0);
+    outColor = vec4(color, 1.0);
 }

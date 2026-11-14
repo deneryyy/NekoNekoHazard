@@ -55,7 +55,7 @@ impl ShadowRenderer {
         context: Arc<RenderingContext>,
         allocator: Arc<Mutex<Allocator>>,
         resources: Arc<Mutex<Resources>>,
-        frame_set_layouts: &'a [vk::DescriptorSetLayout],
+        frame_set_layout: vk::DescriptorSetLayout,
         skin_set_layout: vk::DescriptorSetLayout,
         skin_set: vk::DescriptorSet,
     ) -> Result<Self> {
@@ -96,7 +96,7 @@ impl ShadowRenderer {
             .stage_flags(vk::ShaderStageFlags::VERTEX);
 
         let mut shadow_set_layouts = Vec::new();
-        shadow_set_layouts.extend_from_slice(frame_set_layouts);
+        shadow_set_layouts.push(frame_set_layout);
         shadow_set_layouts.push(skin_set_layout);
         let shadow_pipeline_layout = unsafe {
             context.device.create_pipeline_layout(
@@ -236,7 +236,7 @@ impl ShadowRenderer {
                 frame.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.shadow_pipeline_layout,
-                2,
+                1,
                 &[self.skin_set],
                 &[],
             );
