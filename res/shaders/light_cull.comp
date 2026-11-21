@@ -1,0 +1,45 @@
+#version 450
+
+#define MAX_PER_CLUSTER 64
+
+layout(local_size_x = 64) in;
+
+struct Light { vec4 positionRange; vec4 colorIntensity; vec4 directionType; vec4 spotParams; };
+struct AABB  { vec4 mn; vec4 mx; };
+
+layout(std430, set = 0, binding = 0) readonly  buffer Lights   { Light lights[]; };
+layout(set = 0, binding = 1) uniform LightingParams {
+    mat4 view; 
+    mat4 invProj; 
+    vec2 screenSize; 
+    float near; 
+    float far;
+    uvec4 grid; 
+    vec4 dirDirection; 
+    vec4 dirColorIntensity;
+    uint lightCount;
+} lighting;
+layout(std430, set = 0, binding = 2) readonly  buffer Clusters { AABB clusters[]; };
+layout(std430, set = 0, binding = 3) writeonly buffer Counts   { uint counts[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer Indices  { uint indices[]; };
+
+bool sphereAABB(vec3 c, float r, vec3 mn, vec3 mx) {
+    vec3 q = clamp(c, mn, mx) - c;
+    return dot(q, q) <= r * r;
+}
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    if (c >= lighting.grid.x * lighting.grid.y * lighting.grid.z) return;
+
+    vec3 mn = clusters[c].mn.xyz, mx = clusters[c].mx.xyz;
+    uint n = 0u;
+    for (uint i = 0u; i < lighting.lightCount && n < MAX_PER_CLUSTER; i++) {
+        vec3 pos = (lighting.view * vec4(lights[i].positionRange.xyz, 1.0)).xyz;
+        if (sphereAABB(pos, lights[i].positionRange.w, mn, mx)) {
+            indices[c * MAX_PER_CLUSTER + n] = i;
+            n++;
+        }
+    }
+    counts[c] = n;
+}

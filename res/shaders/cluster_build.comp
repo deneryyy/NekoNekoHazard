@@ -1,0 +1,44 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 1) uniform LightingParams {
+    mat4 view; 
+    mat4 invProj; 
+    vec2 screenSize; 
+    float near; 
+    float far;
+    uvec4 grid; 
+    vec4 dirDirection; 
+    vec4 dirColorIntensity;
+    uint lightCount;
+} lighting;
+
+struct AABB { vec4 mn; vec4 mx; };
+layout(std430, set = 0, binding = 2) writeonly buffer Clusters { AABB clusters[]; };
+
+vec3 pixelToView(vec2 px) {
+    vec4 v = lighting.invProj * vec4(px / lighting.screenSize * 2.0 - 1.0, 1.0, 1.0);
+    return v.xyz / v.w;
+}
+vec3 rayAtDepth(vec3 p, float d) { return p * (-d / p.z); }  // hit plane z = -d
+
+void main() {
+    uvec3 id = gl_GlobalInvocationID;
+    if (any(greaterThanEqual(id, lighting.grid.xyz))) return;
+
+    vec2 tile = lighting.screenSize / vec2(lighting.grid.xy);
+    vec3 p0 = pixelToView(vec2(id.xy) * tile);
+    vec3 p1 = pixelToView(vec2(id.xy + 1u) * tile);
+
+    float ratio = lighting.far / lighting.near;
+    float zN = lighting.near * pow(ratio, float(id.z)      / float(lighting.grid.z));
+    float zF = lighting.near * pow(ratio, float(id.z + 1u) / float(lighting.grid.z));
+
+    vec3 a = rayAtDepth(p0, zN), b = rayAtDepth(p0, zF);
+    vec3 c = rayAtDepth(p1, zN), d = rayAtDepth(p1, zF);
+
+    uint idx = id.x + id.y * lighting.grid.x + id.z * lighting.grid.x * lighting.grid.y;
+    clusters[idx].mn = vec4(min(min(a, b), min(c, d)), 0.0);
+    clusters[idx].mx = vec4(max(max(a, b), max(c, d)), 0.0);
+}

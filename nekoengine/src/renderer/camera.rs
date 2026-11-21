@@ -34,8 +34,8 @@ pub struct RenderCamera {
 const SENSIVITY: f32 = 0.1;
 const SPEED: f32 = 20.0;
 const FOV: f32 = 45.0;
-const NEAR: f32 = 0.1;
-const FAR: f32 = 1000.0;
+const NEAR: f32 = 0.5;
+const FAR: f32 = 200.0;
 
 impl CameraController {
     pub fn front(&self) -> glam::Vec3 {

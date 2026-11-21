@@ -60,7 +60,7 @@ impl Uploader {
                 ring: RingStagingBuffer::new(
                     context.clone(),
                     &mut allocator.clone().lock(),
-                    256 * 1024 * 1024,
+                    128 * 1024 * 1024,
                 )?,
                 allocator,
                 context,

@@ -28,8 +28,9 @@ use crate::{
         character_renderer::CharacterRenderer,
         egui_renderer::EguiRenderer,
         lighting::{
-            DirectionalLight, GpuDirectional, GpuLight, LightingParamsUniformBufferObject,
-            MAX_LIGHTS, PointLight, SpotLight,
+            CLUSTER_COUNT, CLUSTER_GRID, ClusterCuller, DirectionalLight, GpuDirectional, GpuLight,
+            LightingParamsUniformBufferObject, MAX_LIGHTS, MAX_LIGHTS_PER_CLUSTER, PointLight,
+            SpotLight,
         },
         shadow_renderer::ShadowRenderer,
         swapchain::Swapchain,
@@ -83,6 +84,9 @@ pub struct ExtractedFrame(pub RenderFrame);
 pub struct Frame {
     lighting_set: vk::DescriptorSet,
     frame_set: vk::DescriptorSet,
+    cluster_indices_buffer: AllocatedBuffer,
+    cluster_counts_buffer: AllocatedBuffer,
+    cluster_aabbs_buffer: AllocatedBuffer,
     lighting_params_uniform_buffer: AllocatedBuffer,
     lights_buffer: AllocatedBuffer,
     joint_buffer: AllocatedBuffer,
@@ -119,6 +123,7 @@ pub struct ToonParamsUniformBufferObject {
 }
 
 pub struct Renderer {
+    cluster_culler: ClusterCuller,
     shadow_renderer: ShadowRenderer,
     pub egui_renderer: EguiRenderer,
     character_renderer: CharacterRenderer,
@@ -127,7 +132,6 @@ pub struct Renderer {
     frame_set_layout: vk::DescriptorSetLayout,
     texture_descriptors: vk::DescriptorSet,
     texture_descriptor_set_layout: vk::DescriptorSetLayout,
-    ring_staging_buffer: RingStagingBuffer,
     allocator: Arc<Mutex<Allocator>>,
     skin_descriptors: SkinDescriptors,
     global_descriptor_allocator: DescriptorAllocator,
@@ -164,7 +168,7 @@ impl Renderer {
             },
             PoolSizeRatio {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                per_set: MAX_JOINTS as f32 + MAX_LIGHTS as f32,
+                per_set: 5.0,
             },
         ]);
         let mut global_descriptor_allocator = DescriptorAllocator::new(
@@ -191,7 +195,7 @@ impl Renderer {
             .binding(
                 2,
                 vk::DescriptorType::STORAGE_BUFFER,
-                MAX_JOINTS,
+                1,
                 vk::ShaderStageFlags::VERTEX,
                 vk::DescriptorBindingFlags::empty(),
             );
@@ -201,7 +205,7 @@ impl Renderer {
             .binding(
                 0,
                 vk::DescriptorType::STORAGE_BUFFER,
-                MAX_LIGHTS as u32,
+                1,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
                 vk::DescriptorBindingFlags::empty(),
             )
@@ -210,6 +214,27 @@ impl Renderer {
                 vk::DescriptorType::UNIFORM_BUFFER,
                 1,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                2,
+                vk::DescriptorType::STORAGE_BUFFER,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                3,
+                vk::DescriptorType::STORAGE_BUFFER,
+                1,
+                vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                4,
+                vk::DescriptorType::STORAGE_BUFFER,
+                1,
+                vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::FRAGMENT,
                 vk::DescriptorBindingFlags::empty(),
             );
         let lighting_set_layout = lighting_set_layout_builder.build(&context.device, false)?;
@@ -298,6 +323,30 @@ impl Renderer {
                     gpu_allocator::MemoryLocation::CpuToGpu,
                 )?;
 
+                let cluster_aabbs_buffer = context.create_buffer(
+                    "Cluster AABBs",
+                    &mut allocator.lock(),
+                    (CLUSTER_COUNT * 32) as u64,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    gpu_allocator::MemoryLocation::GpuOnly,
+                )?;
+
+                let cluster_counts_buffer = context.create_buffer(
+                    "Cluster Counts",
+                    &mut allocator.lock(),
+                    (CLUSTER_COUNT * 4) as u64,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    gpu_allocator::MemoryLocation::GpuOnly,
+                )?;
+
+                let cluster_indices_buffer = context.create_buffer(
+                    "Cluster Indices",
+                    &mut allocator.lock(),
+                    (CLUSTER_COUNT * MAX_LIGHTS_PER_CLUSTER * 4) as u64,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    gpu_allocator::MemoryLocation::GpuOnly,
+                )?;
+
                 let frame_set = global_descriptor_allocator.allocate(
                     &context.device,
                     frame_set_layout,
@@ -347,10 +396,34 @@ impl Renderer {
                         0,
                         std::mem::size_of::<LightingParamsUniformBufferObject>() as u64,
                     )
+                    .buffer(
+                        2,
+                        vk::DescriptorType::STORAGE_BUFFER,
+                        cluster_aabbs_buffer.buffer,
+                        0,
+                        vk::WHOLE_SIZE,
+                    )
+                    .buffer(
+                        3,
+                        vk::DescriptorType::STORAGE_BUFFER,
+                        cluster_counts_buffer.buffer,
+                        0,
+                        vk::WHOLE_SIZE,
+                    )
+                    .buffer(
+                        4,
+                        vk::DescriptorType::STORAGE_BUFFER,
+                        cluster_indices_buffer.buffer,
+                        0,
+                        vk::WHOLE_SIZE,
+                    )
                     .update(&context.device, lighting_set);
                 frames.push(Frame {
                     lighting_set,
                     frame_set,
+                    cluster_indices_buffer,
+                    cluster_counts_buffer,
+                    cluster_aabbs_buffer,
                     lighting_params_uniform_buffer,
                     lights_buffer,
                     joint_buffer,
@@ -379,7 +452,10 @@ impl Renderer {
                 skin_descriptors.skin_set,
             )?;
 
+            let cluster_culler = ClusterCuller::new(context.clone(), lighting_set_layout)?;
+
             Ok(Self {
+                cluster_culler,
                 shadow_renderer,
                 egui_renderer,
                 character_renderer: CharacterRenderer::new(
@@ -397,11 +473,6 @@ impl Renderer {
                 frame_set_layout,
                 texture_descriptors: texture_set,
                 texture_descriptor_set_layout: texture_set_layout,
-                ring_staging_buffer: RingStagingBuffer::new(
-                    context.clone(),
-                    &mut allocator.lock(),
-                    64 * 1024 * 1024,
-                )?,
                 allocator: allocator.clone(),
                 skin_descriptors,
                 global_descriptor_allocator,
@@ -542,8 +613,8 @@ impl Renderer {
             let mut proj = glam::Mat4::perspective_rh(
                 render_frame.camera.fov_y.to_radians(),
                 swapchain.extent.width as f32 / swapchain.extent.height as f32,
-                0.1,
-                1000.0,
+                render_frame.camera.near,
+                render_frame.camera.far,
             );
             proj.y_axis.y *= -1.0;
 
@@ -572,22 +643,18 @@ impl Renderer {
 
             let (dir_direction, dir_color_intensity) = match &render_frame.dir_light {
                 Some(d) => (d.direction, d.color_intensity),
-                None => (glam::Vec4::ZERO, glam::Vec4::ZERO), // w = 0 -> shader skips it
+                None => (glam::Vec4::ZERO, glam::Vec4::ZERO),
             };
             let lighting_ubo = LightingParamsUniformBufferObject {
+                view,
                 inv_proj: proj.inverse(),
                 screen_size: glam::Vec2::new(
-                    swapchain.extent.width as f32,
-                    swapchain.extent.height as f32,
+                    swapchain.draw_image.extent.width as f32,
+                    swapchain.draw_image.extent.height as f32,
                 ),
                 near: render_frame.camera.near,
                 far: render_frame.camera.far,
-                grid: glam::UVec4 {
-                    x: 0,
-                    y: 0,
-                    z: 0,
-                    w: 0,
-                },
+                grid: CLUSTER_GRID.extend(0),
                 dir_direction,
                 dir_color_intensity,
                 light_count: render_frame.lights.len() as u32,
@@ -644,7 +711,6 @@ impl Renderer {
                     .device
                     .wait_for_fences(&[frame.in_flight_fence], true, u64::MAX)?;
             }
-            self.ring_staging_buffer.retire_frame(frame_index);
             {
                 let _s = tracy_client::span!("bindless collect");
                 let mut res = self.resources.lock();
@@ -693,7 +759,25 @@ impl Renderer {
 
             Self::upload_uniform_buffer(&render_frame, &self.swapchain, frame);
 
+            let z = self.gpu_profiler.begin_zone(
+                &self.context.device,
+                frame.command_buffer,
+                frame_index,
+                tracy_client::span_location!("shadows"),
+            );
             self.shadow_renderer.record_commands(frame, &render_frame);
+            self.gpu_profiler
+                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
+
+            let z = self.gpu_profiler.begin_zone(
+                &self.context.device,
+                frame.command_buffer,
+                frame_index,
+                tracy_client::span_location!("clustered_light_culler"),
+            );
+            self.cluster_culler.record_commands(frame);
+            self.gpu_profiler
+                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
 
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -852,7 +936,6 @@ impl Renderer {
 
             let render_finished_semaphore = self.render_finished_semaphores[image_index as usize];
 
-            self.ring_staging_buffer.end_frame(frame_index);
             {
                 let _s = tracy_client::span!("queue_submit");
                 if self.context.use_sync2 {
@@ -936,6 +1019,14 @@ impl Drop for Renderer {
                     .destroy_buffer(&mut self.allocator.lock(), &mut frame.global_uniform_buffer);
                 self.context
                     .destroy_buffer(&mut self.allocator.lock(), &mut frame.lights_buffer);
+                self.context
+                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.cluster_aabbs_buffer);
+                self.context
+                    .destroy_buffer(&mut self.allocator.lock(), &mut frame.cluster_counts_buffer);
+                self.context.destroy_buffer(
+                    &mut self.allocator.lock(),
+                    &mut frame.cluster_indices_buffer,
+                );
                 self.context.destroy_buffer(
                     &mut self.allocator.lock(),
                     &mut frame.lighting_params_uniform_buffer,
@@ -953,10 +1044,6 @@ impl Drop for Renderer {
             self.global_descriptor_allocator
                 .destroy(&self.context.device);
 
-            self.context.destroy_buffer(
-                &mut self.allocator.lock(),
-                &mut self.ring_staging_buffer.buffer,
-            );
         }
     }
 }

@@ -2,6 +2,8 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
+#define MAX_PER_CLUSTER 64
+
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
@@ -34,6 +36,7 @@ struct Light {
 };
 layout(std430, set = 3, binding = 0) readonly buffer Lights { Light lights[]; };
 layout(set = 3, binding = 1) uniform LightingParams {
+    mat4 view;
     mat4 invProj;
     vec2 screenSize;
     float near;
@@ -44,6 +47,9 @@ layout(set = 3, binding = 1) uniform LightingParams {
     uint lightCount;
 } lighting;
 
+layout(std430, set = 3, binding = 3) readonly buffer Counts  { uint counts[]; };
+layout(std430, set = 3, binding = 4) readonly buffer Indices { uint indices[]; };
+
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) flat in uint materialId;
 layout(location = 2) in vec3 normal;
@@ -51,6 +57,16 @@ layout(location = 3) in vec3 fragPos;
 layout(location = 4) in vec4 baseColorFactor;
 
 layout(location = 0) out vec4 outColor;
+
+uint clusterIndex() {
+    float depth = 1.0 / gl_FragCoord.w;   
+    float slice = log(max(depth / lighting.near, 1.0))
+                * float(lighting.grid.z) / log(lighting.far / lighting.near);
+    uint z = min(uint(slice), lighting.grid.z - 1u);
+    uvec2 xy = min(uvec2(gl_FragCoord.xy / lighting.screenSize * vec2(lighting.grid.xy)),
+                   lighting.grid.xy - 1u);
+    return xy.x + xy.y * lighting.grid.x + z * lighting.grid.x * lighting.grid.y;
+}
 
 float attenuation(float dist, float range) {
     float x = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
@@ -108,8 +124,10 @@ void main() {
         color += toonSpec(N, V, L, lit) * toon.specStrength * radiance;
     }
 
-    for (uint i = 0u; i < lighting.lightCount; i++) {
-        Light l = lights[i];
+    uint c = clusterIndex();
+    uint n = counts[c];
+    for (uint k = 0u; k < n; k++) {
+        Light l = lights[indices[c * MAX_PER_CLUSTER + k]];
         vec3 toL = l.positionRange.xyz - fragPos;
         float dist = length(toL);
         float range = l.positionRange.w;

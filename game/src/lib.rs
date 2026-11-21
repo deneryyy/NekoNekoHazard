@@ -43,8 +43,13 @@ pub fn spawn_world(mut commands: Commands, assets: Res<Assets>) -> Result<()> {
         "chito",
         include_bytes!(concat!(env!("OUT_DIR"), "/res/models/chito.glb")),
     )?;
+    let plane_data = gltf::load_model_glb(
+        "plane",
+        include_bytes!(concat!(env!("OUT_DIR"), "/res/models/plane.glb")),
+    )?;
     let annie_model_handle;
     let chito_model_handle;
+    let plane_model_handle;
     {
         let mut res = resources.lock();
         let missing_texture = res.upload_texture(TextureData::decode(
@@ -62,6 +67,7 @@ pub fn spawn_world(mut commands: Commands, assets: Res<Assets>) -> Result<()> {
         )?;
         annie_model_handle = res.upload_model(annie_data, missing_texture, missing_material)?;
         chito_model_handle = res.upload_model(chito_data, missing_texture, missing_material)?;
+        plane_model_handle = res.upload_model(plane_data, missing_texture, missing_material)?;
 
         let annie_model = res.models.get(annie_model_handle).unwrap();
         let mut e_annie = commands.spawn((
@@ -84,29 +90,27 @@ pub fn spawn_world(mut commands: Commands, assets: Res<Assets>) -> Result<()> {
         if !chito_model.clips.is_empty() {
             e_chito.insert(Animator::new(&chito_model.skeleton));
         }
+        commands.spawn((
+            Visibility(true),
+            ModelInstance(plane_model_handle),
+            GlobalTransform(glam::Mat4::IDENTITY),
+        ));
     }
 
-    commands.spawn((
-        PointLight {
-            color: Vec3::new(1.0, 1.0, 1.0),
-            intensity: 0.1,
-            range: 50.0,
-        },
-        GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-            20.0, 20.0, 20.0,
-        ))),
-    ));
-
-    commands.spawn((
-        PointLight {
-            color: Vec3::new(1.0, 1.0, 1.0),
-            intensity: 0.1,
-            range: 50.0,
-        },
-        GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-            -20.0, 20.0, -20.0,
-        ))),
-    ));
+    for x in -10..10 {
+        for z in -10..10 {
+            commands.spawn((
+                PointLight {
+                    color: Vec3::new(1.0, 1.0, 1.0),
+                    intensity: 1.0,
+                    range: 3.0,
+                },
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    (x * 5) as f32, 1.0, (z * 5) as f32,
+                ))),
+            ));
+        }
+    }
 
     /*
     commands.spawn((
