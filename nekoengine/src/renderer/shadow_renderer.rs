@@ -69,11 +69,16 @@ impl ShadowRenderer {
             vk::Format::D32_SFLOAT,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::DEPTH,
+            vk::SampleCountFlags::TYPE_1,
         )?;
 
         let mut render_pass = None;
         if !context.use_dynamic_rendering {
-            render_pass = Some(context.create_render_pass(None, Some(depth_map.image_format))?);
+            render_pass = Some(context.create_render_pass(
+                None,
+                Some(depth_map.image_format),
+                vk::AttachmentLoadOp::CLEAR,
+            )?);
         }
 
         let extent = vk::Extent2D {
@@ -146,6 +151,7 @@ impl ShadowRenderer {
             Default::default(),
             render_pass,
             vertex_input_state,
+            vk::SampleCountFlags::TYPE_1,
         )?;
 
         unsafe {
@@ -198,6 +204,8 @@ impl ShadowRenderer {
             vk::Rect2D::default().extent(extent),
             self.framebuffer,
             self.render_pass,
+            None,
+            vk::AttachmentLoadOp::CLEAR,
         );
 
         unsafe {

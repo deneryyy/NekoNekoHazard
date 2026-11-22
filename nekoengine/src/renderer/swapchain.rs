@@ -11,10 +11,13 @@ use crate::gpu::context::{AllocatedImage, RenderingContext, Surface};
 
 pub struct Swapchain {
     allocator: Allocator,
-    pub framebuffer: Option<vk::Framebuffer>,
+    pub gui_framebuffer: Option<vk::Framebuffer>,
+    pub gui_render_pass: Option<vk::RenderPass>,
+    pub main_framebuffer: Option<vk::Framebuffer>,
     pub main_render_pass: Option<vk::RenderPass>,
     pub depth_image: AllocatedImage,
-    pub draw_image: AllocatedImage,
+    pub resolve_image: AllocatedImage,
+    pub msaa_draw_image: AllocatedImage,
     pub desired_image_count: u32,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
@@ -63,36 +66,56 @@ impl Swapchain {
             height: extent.height,
             depth: 1,
         };
-        let draw_image = Self::create_draw_image(extent_3d, context.clone(), &mut allocator)?;
+        let msaa_draw_image =
+            Self::create_msaa_draw_image(extent_3d, context.clone(), &mut allocator)?;
+        let resolve_image = Self::create_resolve_image(extent_3d, context.clone(), &mut allocator)?;
         let depth_image = Self::create_depth_image(extent_3d, context.clone(), &mut allocator)?;
 
         let mut main_render_pass = None;
+        let mut gui_render_pass = None;
         if !context.use_dynamic_rendering {
-            main_render_pass = Some(context.create_render_pass(
-                Some(draw_image.image_format),
-                Some(depth_image.image_format),
+            main_render_pass = Some(context.create_msaa_render_pass(
+                msaa_draw_image.image_format,
+                depth_image.image_format,
+                context.msaa_samples,
+            )?);
+            gui_render_pass = Some(context.create_render_pass(
+                Some(resolve_image.image_format),
+                None,
+                vk::AttachmentLoadOp::LOAD,
             )?);
         }
 
-        let mut framebuffer = None;
+        let mut main_framebuffer = None;
+        let mut gui_framebuffer = None;
         if !context.use_dynamic_rendering {
-            framebuffer = Some(context.create_framebuffer(
-                Some(draw_image.image_view),
-                Some(depth_image.image_view),
+            main_framebuffer = Some(context.create_msaa_framebuffer(
+                msaa_draw_image.image_view,
+                resolve_image.image_view,
+                depth_image.image_view,
                 extent,
                 main_render_pass.unwrap(),
+            )?);
+            gui_framebuffer = Some(context.create_framebuffer(
+                Some(resolve_image.image_view),
+                None,
+                extent,
+                gui_render_pass.unwrap(),
             )?);
         }
 
         Ok(Self {
             allocator,
+            gui_framebuffer,
+            gui_render_pass,
+            main_framebuffer,
+            main_render_pass,
             depth_image,
-            draw_image,
+            resolve_image,
+            msaa_draw_image,
             desired_image_count,
             format,
             extent,
-            framebuffer,
-            main_render_pass,
             image_views: Default::default(),
             images: Default::default(),
             handle: vk::SwapchainKHR::null(),
@@ -189,7 +212,10 @@ impl Swapchain {
                 )
                 .context("create_swapchain")?;
 
-            if let Some(fb) = self.framebuffer.take() {
+            if let Some(fb) = self.main_framebuffer.take() {
+                self.context.device.destroy_framebuffer(fb, None);
+            }
+            if let Some(fb) = self.gui_framebuffer.take() {
                 self.context.device.destroy_framebuffer(fb, None);
             }
 
@@ -201,27 +227,15 @@ impl Swapchain {
                 .swapchain_extension
                 .destroy_swapchain(self.handle, None);
 
-            // Destroying draw image
             self.context
-                .device
-                .destroy_image(self.draw_image.image, None);
+                .destroy_image(&mut self.allocator, &mut self.msaa_draw_image);
+
             self.context
-                .device
-                .destroy_image_view(self.draw_image.image_view, None);
-            self.allocator
-                .free(std::mem::take(&mut self.draw_image.allocation))
-                .unwrap();
-            // Destroying depth image
+                .destroy_image(&mut self.allocator, &mut self.resolve_image);
+
             self.context
-                .device
-                .destroy_image(self.depth_image.image, None);
-            self.context
-                .device
-                .destroy_image_view(self.depth_image.image_view, None);
-            self.allocator
-                .free(std::mem::take(&mut self.depth_image.allocation))
-                .unwrap();
-            // getting new ones
+                .destroy_image(&mut self.allocator, &mut self.depth_image);
+
             self.handle = new_swapchain;
             self.images = self
                 .context
@@ -240,19 +254,29 @@ impl Swapchain {
                 height: self.extent.height,
                 depth: 1,
             };
-            self.draw_image =
-                Self::create_draw_image(extent_3d, self.context.clone(), &mut self.allocator)?;
+            self.msaa_draw_image =
+                Self::create_msaa_draw_image(extent_3d, self.context.clone(), &mut self.allocator)?;
+            self.resolve_image =
+                Self::create_resolve_image(extent_3d, self.context.clone(), &mut self.allocator)?;
             self.depth_image =
                 Self::create_depth_image(extent_3d, self.context.clone(), &mut self.allocator)?;
 
             if !self.context.use_dynamic_rendering {
-                let fb = self.context.create_framebuffer(
-                    Some(self.draw_image.image_view),
-                    Some(self.depth_image.image_view),
+                let mfb = self.context.create_msaa_framebuffer(
+                    self.msaa_draw_image.image_view,
+                    self.resolve_image.image_view,
+                    self.depth_image.image_view,
                     self.extent,
                     self.main_render_pass.unwrap(),
                 )?;
-                self.framebuffer = Some(fb);
+                self.main_framebuffer = Some(mfb);
+                let gui_fb = self.context.create_framebuffer(
+                    Some(self.resolve_image.image_view),
+                    None,
+                    self.extent,
+                    self.gui_render_pass.unwrap(),
+                )?;
+                self.gui_framebuffer = Some(gui_fb);
             }
         }
 
@@ -270,10 +294,11 @@ impl Swapchain {
             vk::Format::D32_SFLOAT,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
             vk::ImageAspectFlags::DEPTH,
+            context.msaa_samples,
         )
     }
 
-    fn create_draw_image(
+    fn create_resolve_image(
         extent: vk::Extent3D,
         context: Arc<RenderingContext>,
         allocator: &mut Allocator,
@@ -287,6 +312,43 @@ impl Swapchain {
                 | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             vk::ImageAspectFlags::COLOR,
+            vk::SampleCountFlags::TYPE_1,
+        )
+    }
+
+    fn create_gui_draw_image(
+        extent: vk::Extent3D,
+        context: Arc<RenderingContext>,
+        allocator: &mut Allocator,
+    ) -> Result<AllocatedImage> {
+        context.create_image(
+            allocator,
+            extent,
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            vk::ImageAspectFlags::COLOR,
+            vk::SampleCountFlags::TYPE_1,
+        )
+    }
+
+    fn create_msaa_draw_image(
+        extent: vk::Extent3D,
+        context: Arc<RenderingContext>,
+        allocator: &mut Allocator,
+    ) -> Result<AllocatedImage> {
+        context.create_image(
+            allocator,
+            extent,
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            vk::ImageAspectFlags::COLOR,
+            context.msaa_samples,
         )
     }
 
@@ -357,8 +419,14 @@ impl Drop for Swapchain {
                 self.context
                     .device
                     .destroy_render_pass(self.main_render_pass.unwrap(), None);
+                self.context
+                    .device
+                    .destroy_render_pass(self.gui_render_pass.unwrap(), None);
             }
-            if let Some(fb) = self.framebuffer.take() {
+            if let Some(fb) = self.main_framebuffer.take() {
+                self.context.device.destroy_framebuffer(fb, None);
+            }
+            if let Some(fb) = self.gui_framebuffer.take() {
                 self.context.device.destroy_framebuffer(fb, None);
             }
             self.image_views.drain(..).for_each(|image_view| {
@@ -368,24 +436,15 @@ impl Drop for Swapchain {
             self.context
                 .swapchain_extension
                 .destroy_swapchain(self.handle, None);
+
             self.context
-                .device
-                .destroy_image(self.depth_image.image, None);
+                .destroy_image(&mut self.allocator, &mut self.msaa_draw_image);
+
             self.context
-                .device
-                .destroy_image_view(self.depth_image.image_view, None);
-            self.allocator
-                .free(std::mem::take(&mut self.depth_image.allocation))
-                .unwrap();
+                .destroy_image(&mut self.allocator, &mut self.resolve_image);
+
             self.context
-                .device
-                .destroy_image(self.draw_image.image, None);
-            self.context
-                .device
-                .destroy_image_view(self.draw_image.image_view, None);
-            self.allocator
-                .free(std::mem::take(&mut self.draw_image.allocation))
-                .unwrap();
+                .destroy_image(&mut self.allocator, &mut self.depth_image);
         }
     }
 }

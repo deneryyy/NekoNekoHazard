@@ -164,9 +164,9 @@ impl CharacterRenderer {
 
         let character_pipeline = context.create_graphics_pipeline(
             vk::Extent2D::default()
-                .width(swapchain.draw_image.extent.width)
-                .height(swapchain.draw_image.extent.height),
-            swapchain.draw_image.image_format,
+                .width(swapchain.msaa_draw_image.extent.width)
+                .height(swapchain.msaa_draw_image.extent.height),
+            swapchain.msaa_draw_image.image_format,
             swapchain.depth_image.image_format,
             character_shader,
             fragment_shader,
@@ -174,6 +174,7 @@ impl CharacterRenderer {
             Default::default(),
             swapchain.main_render_pass,
             vertex_input_state,
+            context.msaa_samples,
         )?;
 
         unsafe {

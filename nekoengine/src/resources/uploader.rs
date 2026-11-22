@@ -184,6 +184,7 @@ impl Uploader {
             format,
             vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::COLOR,
+            vk::SampleCountFlags::TYPE_1,
         )?;
         unsafe {
             self.context.transition_image_layout(

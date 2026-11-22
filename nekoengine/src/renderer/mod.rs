@@ -649,8 +649,8 @@ impl Renderer {
                 view,
                 inv_proj: proj.inverse(),
                 screen_size: glam::Vec2::new(
-                    swapchain.draw_image.extent.width as f32,
-                    swapchain.draw_image.extent.height as f32,
+                    swapchain.msaa_draw_image.extent.width as f32,
+                    swapchain.msaa_draw_image.extent.height as f32,
                 ),
                 near: render_frame.camera.near,
                 far: render_frame.camera.far,
@@ -781,7 +781,21 @@ impl Renderer {
 
             self.context.transition_image_layout(
                 frame.command_buffer,
-                self.swapchain.draw_image.image,
+                self.swapchain.msaa_draw_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageAspectFlags::COLOR,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::AccessFlags::MEMORY_WRITE,
+                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+            );
+
+            self.context.transition_image_layout(
+                frame.command_buffer,
+                self.swapchain.resolve_image.image,
                 0,
                 vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::UNDEFINED,
@@ -807,20 +821,20 @@ impl Renderer {
                 vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
             );
 
-            let extent = vk::Extent2D::default()
-                .width(self.swapchain.extent.width)
-                .height(self.swapchain.extent.height);
+            let extent = self.swapchain.extent;
 
             self.context.begin_rendering(
                 frame.command_buffer,
-                Some(self.swapchain.draw_image.image_view),
+                Some(self.swapchain.msaa_draw_image.image_view),
                 Some(self.swapchain.depth_image.image_view),
                 vk::ClearColorValue {
                     float32: [0.0, 0.0, 0.0, 1.0],
                 },
                 vk::Rect2D::default().extent(extent),
-                self.swapchain.framebuffer,
+                self.swapchain.main_framebuffer,
                 self.swapchain.main_render_pass,
+                Some(&self.swapchain.msaa_draw_image),
+                vk::AttachmentLoadOp::CLEAR,
             );
 
             self.context.device.cmd_set_viewport(
@@ -856,20 +870,6 @@ impl Renderer {
             self.gpu_profiler
                 .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
 
-            let z = self.gpu_profiler.begin_zone(
-                &self.context.device,
-                frame.command_buffer,
-                frame_index,
-                tracy_client::span_location!("egui"),
-            );
-            self.egui_renderer.record_commands(
-                frame,
-                extent,
-                self.context.queues[self.context.queue_families.graphics as usize],
-            )?;
-            self.gpu_profiler
-                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
-
             if self.context.use_dynamic_rendering {
                 self.context.device.cmd_end_rendering(frame.command_buffer);
             } else {
@@ -877,10 +877,26 @@ impl Renderer {
                     .device
                     .cmd_end_render_pass(frame.command_buffer);
             }
-            //transition the draw image and the swapchain image into their correct transfer layouts
+
+            let z = self.gpu_profiler.begin_zone(
+                &self.context.device,
+                frame.command_buffer,
+                frame_index,
+                tracy_client::span_location!("egui"),
+            );
+            self.egui_renderer.record_commands(
+                &self.swapchain,
+                frame,
+                extent,
+                self.context.queues[self.context.queue_families.graphics as usize],
+            )?;
+            self.gpu_profiler
+                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
+
+            //transition the resolve image and the swapchain image into their correct transfer layouts
             self.context.transition_image_layout(
                 frame.command_buffer,
-                self.swapchain.draw_image.image,
+                self.swapchain.resolve_image.image,
                 0,
                 vk::REMAINING_MIP_LEVELS,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -905,14 +921,14 @@ impl Renderer {
                 vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
             );
 
-            // execute a copy from the draw image into the swapchain
+            // execute a copy from the resolve image into the swapchain
             self.context.copy_image_to_image(
                 frame.command_buffer,
-                self.swapchain.draw_image.image,
+                self.swapchain.resolve_image.image,
                 self.swapchain.images[image_index as usize],
                 vk::Extent2D::default()
-                    .width(self.swapchain.draw_image.extent.width)
-                    .height(self.swapchain.draw_image.extent.height),
+                    .width(self.swapchain.resolve_image.extent.width)
+                    .height(self.swapchain.resolve_image.extent.height),
                 self.swapchain.extent,
             );
 
@@ -1043,7 +1059,6 @@ impl Drop for Renderer {
 
             self.global_descriptor_allocator
                 .destroy(&self.context.device);
-
         }
     }
 }

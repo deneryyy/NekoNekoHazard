@@ -1,4 +1,5 @@
-use nekoengine::app::App;
+use nekoengine::{Engine, WindowConfig};
+use nekohazard_game::GamePlugin;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::Registry;
@@ -18,12 +19,12 @@ fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
 
     std::panic::set_hook(Box::new(|info| tracing::error!("panic: {info}")));
 
-    let mut app = App::default();
-
-    let event_loop = EventLoop::builder()
-        .with_android_app(android_app)
-        .build()
-        .unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut app).unwrap();
+    Engine::builder()
+        .window(WindowConfig {
+            title: "Nekohazard".to_string(),
+            size: (800, 600),
+            grab_cursor: false,
+        })
+        .add_plugin(GamePlugin)
+        .run()?;
 }

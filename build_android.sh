@@ -1,1 +1,1 @@
-cargo apk build -p nekohazard_android --lib
+cargo apk build -p nekohazard-android --lib

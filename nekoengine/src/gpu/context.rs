@@ -60,6 +60,7 @@ pub struct AllocatedBuffer {
 }
 
 pub struct RenderingContext {
+    pub msaa_samples: vk::SampleCountFlags,
     pub calibrated_timestamps: Option<ash::ext::calibrated_timestamps::Device>,
     pub use_buffer_device_address: bool,
     pub use_dynamic_rendering: bool,
@@ -273,6 +274,21 @@ impl RenderingContext {
 
             let use_calibrated_timestamps = has_extension(ash::ext::calibrated_timestamps::NAME);
             info!("using calibrated timestamps: {}", use_calibrated_timestamps);
+            let color_sample_limits = physical_device
+                .properties
+                .limits
+                .framebuffer_color_sample_counts;
+            let depth_sample_limits = physical_device
+                .properties
+                .limits
+                .framebuffer_depth_sample_counts;
+            let mut samples = vk::SampleCountFlags::TYPE_1;
+            if color_sample_limits.contains(vk::SampleCountFlags::TYPE_4)
+                && depth_sample_limits.contains(vk::SampleCountFlags::TYPE_4)
+            {
+                samples = vk::SampleCountFlags::TYPE_4;
+                info!("using 4X MSAA");
+            }
 
             let mut extension_names = Vec::from([ash::khr::swapchain::NAME.as_ptr()]);
             if use_calibrated_timestamps {
@@ -336,6 +352,7 @@ impl RenderingContext {
             )?;
 
             Ok(Self {
+                msaa_samples: samples,
                 calibrated_timestamps,
                 use_buffer_device_address,
                 use_dynamic_rendering,
@@ -404,6 +421,7 @@ impl RenderingContext {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect_flags: vk::ImageAspectFlags,
+        samples: vk::SampleCountFlags,
     ) -> Result<AllocatedImage> {
         let image_handle = unsafe {
             self.device.create_image(
@@ -413,7 +431,7 @@ impl RenderingContext {
                     .extent(extent)
                     .mip_levels(1)
                     .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .samples(samples)
                     .tiling(vk::ImageTiling::OPTIMAL)
                     .usage(usage)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -644,6 +662,7 @@ impl RenderingContext {
         pipeline_cache: vk::PipelineCache,
         render_pass: Option<vk::RenderPass>,
         vertex_input_state: vk::PipelineVertexInputStateCreateInfo<'a>,
+        samples: vk::SampleCountFlags,
     ) -> Result<vk::Pipeline> {
         let entry_point = std::ffi::CString::new("main")?;
 
@@ -685,7 +704,7 @@ impl RenderingContext {
                         )
                         .multisample_state(
                             &vk::PipelineMultisampleStateCreateInfo::default()
-                                .rasterization_samples(vk::SampleCountFlags::TYPE_1),
+                                .rasterization_samples(samples),
                         )
                         .color_blend_state(
                             &vk::PipelineColorBlendStateCreateInfo::default().attachments(&[
@@ -735,6 +754,8 @@ impl RenderingContext {
         render_area: vk::Rect2D,
         framebuffer: Option<vk::Framebuffer>,
         main_render_pass: Option<vk::RenderPass>,
+        resolve_image: Option<&AllocatedImage>,
+        load_op: vk::AttachmentLoadOp,
     ) {
         unsafe {
             if self.use_dynamic_rendering {
@@ -748,8 +769,23 @@ impl RenderingContext {
                                     .image_view(view)
                                     .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                                     .clear_value(vk::ClearValue { color: clear_color })
-                                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                                    .store_op(vk::AttachmentStoreOp::STORE),
+                                    .load_op(load_op)
+                                    .store_op(vk::AttachmentStoreOp::STORE)
+                                    .resolve_mode(
+                                        resolve_image.map_or(vk::ResolveModeFlags::NONE, |_| {
+                                            vk::ResolveModeFlags::AVERAGE
+                                        }),
+                                    )
+                                    .resolve_image_view(
+                                        resolve_image.map_or(vk::ImageView::null(), |image| {
+                                            image.image_view
+                                        }),
+                                    )
+                                    .resolve_image_layout(
+                                        resolve_image.map_or(vk::ImageLayout::UNDEFINED, |_| {
+                                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                                        }),
+                                    ),
                             ]
                         }))
                         .depth_attachment(&depth_view.map_or(
@@ -764,7 +800,7 @@ impl RenderingContext {
                                             stencil: 0,
                                         },
                                     })
-                                    .load_op(vk::AttachmentLoadOp::CLEAR)
+                                    .load_op(load_op)
                                     .store_op(vk::AttachmentStoreOp::STORE)
                             },
                         ))
@@ -773,6 +809,9 @@ impl RenderingContext {
             } else {
                 let mut clear_values = Vec::new();
                 if color_view.is_some() {
+                    clear_values.push(vk::ClearValue { color: clear_color });
+                }
+                if resolve_image.is_some() {
                     clear_values.push(vk::ClearValue { color: clear_color });
                 }
                 if depth_view.is_some() {
@@ -797,17 +836,88 @@ impl RenderingContext {
         }
     }
 
+    pub fn create_msaa_render_pass(
+        &self,
+        color_format: vk::Format,
+        depth_format: vk::Format,
+        samples: vk::SampleCountFlags,
+    ) -> Result<vk::RenderPass> {
+        let color_attachment = vk::AttachmentDescription::default()
+            .format(color_format)
+            .samples(samples)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let resolve_attachment = vk::AttachmentDescription::default()
+            .format(color_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let depth_attachment = vk::AttachmentDescription::default()
+            .format(depth_format)
+            .samples(samples)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE) // depth not read after pass
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        let color_ref = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let resolve_ref = vk::AttachmentReference::default()
+            .attachment(1)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let depth_ref = vk::AttachmentReference::default()
+            .attachment(2)
+            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(std::slice::from_ref(&color_ref))
+            .resolve_attachments(std::slice::from_ref(&resolve_ref))
+            .depth_stencil_attachment(&depth_ref);
+
+        let dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+
+        let attachments = [color_attachment, resolve_attachment, depth_attachment];
+        let dependencies = [dependency];
+
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(&attachments)
+            .subpasses(std::slice::from_ref(&subpass))
+            .dependencies(&dependencies);
+
+        let render_pass = unsafe { self.device.create_render_pass(&render_pass_info, None)? };
+
+        Ok(render_pass)
+    }
+
     pub fn create_render_pass(
         &self,
         color_format: Option<vk::Format>,
         depth_format: Option<vk::Format>,
+        load_op: vk::AttachmentLoadOp,
     ) -> Result<vk::RenderPass> {
         let color_attachment = color_format.map(|format| {
             vk::AttachmentDescription::default()
                 .format(format)
                 .samples(vk::SampleCountFlags::TYPE_1)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
+                .load_op(load_op)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
                 .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -817,7 +927,7 @@ impl RenderingContext {
             vk::AttachmentDescription::default()
                 .format(format)
                 .samples(vk::SampleCountFlags::TYPE_1)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .load_op(load_op)
                 .store_op(vk::AttachmentStoreOp::DONT_CARE) // depth not read after pass
                 .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                 .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -827,7 +937,6 @@ impl RenderingContext {
         let color_ref = vk::AttachmentReference::default()
             .attachment(0)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
         let depth_ref = vk::AttachmentReference::default()
             .attachment(color_format.map_or(0, |format| 1))
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -837,7 +946,6 @@ impl RenderingContext {
         if depth_format.is_some() {
             subpass = subpass.depth_stencil_attachment(&depth_ref);
         }
-
         if color_format.is_some() {
             subpass = subpass.color_attachments(std::slice::from_ref(&color_ref));
         }
@@ -864,6 +972,28 @@ impl RenderingContext {
         let render_pass = unsafe { self.device.create_render_pass(&render_pass_info, None)? };
 
         Ok(render_pass)
+    }
+
+    pub fn create_msaa_framebuffer(
+        &self,
+        color_view: vk::ImageView,
+        resolve_view: vk::ImageView,
+        depth_view: vk::ImageView,
+        extent: vk::Extent2D,
+        render_pass: vk::RenderPass,
+    ) -> Result<vk::Framebuffer> {
+        let attachments = [color_view, resolve_view, depth_view];
+
+        let framebuffer_info = vk::FramebufferCreateInfo::default()
+            .render_pass(render_pass)
+            .attachments(&attachments)
+            .width(extent.width)
+            .height(extent.height)
+            .layers(1);
+
+        let framebuffer = unsafe { self.device.create_framebuffer(&framebuffer_info, None)? };
+
+        Ok(framebuffer)
     }
 
     pub fn create_framebuffer(

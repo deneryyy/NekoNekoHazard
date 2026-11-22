@@ -21,12 +21,13 @@ pub struct EguiRenderer {
     pub egui_winit: State,
     pub renderer: Renderer<GpuAllocator>,
     pub window: Arc<Window>,
+    pub context: Arc<RenderingContext>,
 }
 
 impl EguiRenderer {
     pub fn new(
         window: Arc<Window>,
-        ctx: Arc<RenderingContext>,
+        context: Arc<RenderingContext>,
         swapchain: &Swapchain,
     ) -> Result<Self> {
         let egui_ctx = Context::default();
@@ -42,27 +43,27 @@ impl EguiRenderer {
         let renderer = {
             let allocator = gpu_allocator::vulkan::Allocator::new(
                 &gpu_allocator::vulkan::AllocatorCreateDesc {
-                    instance: ctx.instance.clone(),
-                    device: ctx.device.clone(),
-                    physical_device: ctx.physical_device.handle,
+                    instance: context.instance.clone(),
+                    device: context.device.clone(),
+                    physical_device: context.physical_device.handle,
                     debug_settings: Default::default(),
                     buffer_device_address: false,
                     allocation_sizes: Default::default(),
                 },
             )?;
 
-            let render_mode = if ctx.use_dynamic_rendering {
+            let render_mode = if context.use_dynamic_rendering {
                 RenderMode::DynamicRendering(DynamicRendering {
-                    color_attachment_format: swapchain.draw_image.image_format,
-                    depth_attachment_format: Some(swapchain.depth_image.image_format),
-                    stencil_attachment_format: Some(swapchain.depth_image.image_format),
+                    color_attachment_format: swapchain.resolve_image.image_format,
+                    depth_attachment_format: None,
+                    stencil_attachment_format: None,
                 })
             } else {
-                RenderMode::RenderPass(swapchain.main_render_pass.unwrap())
+                RenderMode::RenderPass(swapchain.gui_render_pass.unwrap())
             };
             Renderer::with_allocator(
                 GpuAllocator::new(std::sync::Arc::new(std::sync::Mutex::new(allocator))),
-                ctx.device.clone(),
+                context.device.clone(),
                 render_mode,
                 Options {
                     in_flight_frames: renderer::FRAME_OVERLAP,
@@ -98,16 +99,50 @@ impl EguiRenderer {
             egui_winit,
             renderer,
             window,
+            context,
         })
     }
 
     pub fn record_commands(
         &mut self,
+        swapchain: &Swapchain,
         frame: &Frame,
         extent: vk::Extent2D,
         queue: vk::Queue,
     ) -> Result<()> {
         let _main = tracy_client::span!("egui renderer record commands");
+
+        self.context.begin_rendering(
+            frame.command_buffer,
+            Some(swapchain.resolve_image.image_view),
+            None,
+            vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+            vk::Rect2D::default().extent(extent),
+            swapchain.gui_framebuffer,
+            swapchain.gui_render_pass,
+            None,
+            vk::AttachmentLoadOp::LOAD,
+        );
+
+        unsafe {
+            self.context.device.cmd_set_viewport(
+                frame.command_buffer,
+                0,
+                &[vk::Viewport::default()
+                    .width(extent.width as f32)
+                    .height(extent.height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0)],
+            );
+
+            self.context.device.cmd_set_scissor(
+                frame.command_buffer,
+                0,
+                &[vk::Rect2D::default().extent(extent)],
+            );
+        }
         for id in self.textures_to_free.drain() {
             self.renderer.free_texture(id)?;
         }
@@ -240,6 +275,17 @@ impl EguiRenderer {
                 &clipped_primitives,
             )?;
         }
+
+        unsafe {
+            if self.context.use_dynamic_rendering {
+                self.context.device.cmd_end_rendering(frame.command_buffer);
+            } else {
+                self.context
+                    .device
+                    .cmd_end_render_pass(frame.command_buffer);
+            }
+        }
+
         Ok(())
     }
 
