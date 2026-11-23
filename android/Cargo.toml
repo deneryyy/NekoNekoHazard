@@ -15,7 +15,7 @@ tracing-subscriber = { workspace = true }
 tracing-android = "0.2.0"
 
 [package.metadata.android]
-package = "xyz.nekohazard.nekoengine"
+package = "xyz.nekoengine.nekohazard"
 apk_name = "Nekohazard"
 build_targets = ["aarch64-linux-android"]
 runtime_libs = "../res/libs"

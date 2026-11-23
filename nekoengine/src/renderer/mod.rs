@@ -833,7 +833,7 @@ impl Renderer {
                 vk::Rect2D::default().extent(extent),
                 self.swapchain.main_framebuffer,
                 self.swapchain.main_render_pass,
-                Some(&self.swapchain.msaa_draw_image),
+                Some(&self.swapchain.resolve_image),
                 vk::AttachmentLoadOp::CLEAR,
             );
 

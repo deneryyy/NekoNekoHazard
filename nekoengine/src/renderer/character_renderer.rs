@@ -166,8 +166,8 @@ impl CharacterRenderer {
             vk::Extent2D::default()
                 .width(swapchain.msaa_draw_image.extent.width)
                 .height(swapchain.msaa_draw_image.extent.height),
-            swapchain.msaa_draw_image.image_format,
-            swapchain.depth_image.image_format,
+            Some(swapchain.msaa_draw_image.image_format),
+            Some(swapchain.depth_image.image_format),
             character_shader,
             fragment_shader,
             character_pipeline_layout,

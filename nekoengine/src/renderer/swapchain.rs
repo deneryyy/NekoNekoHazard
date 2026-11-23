@@ -309,25 +309,6 @@ impl Swapchain {
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::STORAGE
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            vk::ImageAspectFlags::COLOR,
-            vk::SampleCountFlags::TYPE_1,
-        )
-    }
-
-    fn create_gui_draw_image(
-        extent: vk::Extent3D,
-        context: Arc<RenderingContext>,
-        allocator: &mut Allocator,
-    ) -> Result<AllocatedImage> {
-        context.create_image(
-            allocator,
-            extent,
-            vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::TRANSFER_SRC
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             vk::ImageAspectFlags::COLOR,
             vk::SampleCountFlags::TYPE_1,
@@ -345,7 +326,6 @@ impl Swapchain {
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             vk::ImageAspectFlags::COLOR,
             context.msaa_samples,

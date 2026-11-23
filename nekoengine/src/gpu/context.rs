@@ -113,6 +113,40 @@ impl RenderingContext {
         ))
     }
 
+    fn max_supported_samples(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        wanted: vk::SampleCountFlags,
+    ) -> vk::SampleCountFlags {
+        let props = unsafe {
+            instance.get_physical_device_image_format_properties(
+                physical_device,
+                format,
+                vk::ImageType::TYPE_2D,
+                vk::ImageTiling::OPTIMAL,
+                usage,
+                vk::ImageCreateFlags::empty(),
+            )
+        };
+
+        let std::result::Result::Ok(props) = props else {
+            return vk::SampleCountFlags::TYPE_1;
+        };
+
+        for candidate in [
+            vk::SampleCountFlags::TYPE_8,
+            vk::SampleCountFlags::TYPE_4,
+            vk::SampleCountFlags::TYPE_2,
+        ] {
+            if candidate.as_raw() <= wanted.as_raw() && props.sample_counts.contains(candidate) {
+                return candidate;
+            }
+        }
+        vk::SampleCountFlags::TYPE_1
+    }
+
     const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
     pub fn new(window: Arc<Window>) -> Result<Self> {
@@ -190,7 +224,8 @@ impl RenderingContext {
                     let features = instance
                         .get_physical_device_features(handle)
                         .sampler_anisotropy(true)
-                        .robust_buffer_access(false);
+                        .robust_buffer_access(false)
+                        .shader_storage_image_multisample(true);
                     let memory_properties = instance.get_physical_device_memory_properties(handle);
                     let queue_family_properties =
                         instance.get_physical_device_queue_family_properties(handle);
@@ -274,21 +309,31 @@ impl RenderingContext {
 
             let use_calibrated_timestamps = has_extension(ash::ext::calibrated_timestamps::NAME);
             info!("using calibrated timestamps: {}", use_calibrated_timestamps);
-            let color_sample_limits = physical_device
-                .properties
-                .limits
-                .framebuffer_color_sample_counts;
-            let depth_sample_limits = physical_device
-                .properties
-                .limits
-                .framebuffer_depth_sample_counts;
-            let mut samples = vk::SampleCountFlags::TYPE_1;
-            if color_sample_limits.contains(vk::SampleCountFlags::TYPE_4)
-                && depth_sample_limits.contains(vk::SampleCountFlags::TYPE_4)
-            {
-                samples = vk::SampleCountFlags::TYPE_4;
-                info!("using 4X MSAA");
-            }
+            let color_samples = Self::max_supported_samples(
+                &instance,
+                physical_device.handle,
+                vk::Format::R16G16B16A16_SFLOAT,
+                vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vk::SampleCountFlags::TYPE_4,
+            );
+            let depth_samples = Self::max_supported_samples(
+                &instance,
+                physical_device.handle,
+                vk::Format::D32_SFLOAT,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::SampleCountFlags::TYPE_4,
+            );
+            let samples = if color_samples.as_raw() < depth_samples.as_raw() {
+                color_samples
+            } else {
+                depth_samples
+            };
+            assert!(
+                samples.contains(vk::SampleCountFlags::TYPE_4),
+                "This device doesn't support MSAA"
+            );
 
             let mut extension_names = Vec::from([ash::khr::swapchain::NAME.as_ptr()]);
             if use_calibrated_timestamps {
@@ -653,9 +698,9 @@ impl RenderingContext {
 
     pub fn create_graphics_pipeline<'a>(
         &self,
-        draw_image_extent: vk::Extent2D,
-        draw_image_format: vk::Format,
-        depth_format: vk::Format,
+        extent: vk::Extent2D,
+        draw_image_format: Option<vk::Format>,
+        depth_format: Option<vk::Format>,
         vertex_shader: vk::ShaderModule,
         fragment_shader: vk::ShaderModule,
         pipeline_layout: vk::PipelineLayout,
@@ -690,10 +735,10 @@ impl RenderingContext {
                         .viewport_state(
                             &vk::PipelineViewportStateCreateInfo::default()
                                 .viewports(&[vk::Viewport::default()
-                                    .width(draw_image_extent.width as f32)
-                                    .height(draw_image_extent.height as f32)
+                                    .width(extent.width as f32)
+                                    .height(extent.height as f32)
                                     .max_depth(1.0)])
-                                .scissors(&[vk::Rect2D::default().extent(draw_image_extent)]),
+                                .scissors(&[vk::Rect2D::default().extent(extent)]),
                         )
                         .rasterization_state(
                             &vk::PipelineRasterizationStateCreateInfo::default()
@@ -733,8 +778,12 @@ impl RenderingContext {
                         .render_pass(render_pass.unwrap_or(vk::RenderPass::null()))
                         .push_next(
                             &mut vk::PipelineRenderingCreateInfo::default()
-                                .color_attachment_formats(&[draw_image_format])
-                                .depth_attachment_format(depth_format),
+                                .color_attachment_formats(
+                                    &draw_image_format.map_or(vec![], |format| vec![format]),
+                                )
+                                .depth_attachment_format(
+                                    depth_format.unwrap_or(vk::Format::UNDEFINED),
+                                ),
                         )],
                     None,
                 )

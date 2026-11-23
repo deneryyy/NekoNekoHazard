@@ -143,8 +143,8 @@ impl ShadowRenderer {
 
         let shadow_pipeline = context.create_graphics_pipeline(
             extent,
-            vk::Format::UNDEFINED,
-            depth_map.image_format,
+            None,
+            Some(depth_map.image_format),
             vertex_shader,
             fragment_shader,
             shadow_pipeline_layout,

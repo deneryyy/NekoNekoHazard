@@ -114,6 +114,17 @@ impl EngineBuilder {
         event_loop.run_app(&mut runner)?;
         runner.error.map_or(Ok(()), Err)
     }
+
+    pub fn run_event_loop(self, event_loop: EventLoop<()>) -> anyhow::Result<()> {
+        event_loop.set_control_flow(ControlFlow::Poll);
+        let mut runner = Runner {
+            builder: Some(self),
+            engine: None,
+            error: None,
+        };
+        event_loop.run_app(&mut runner)?;
+        runner.error.map_or(Ok(()), Err)
+    }
 }
 
 pub struct WindowConfig {
