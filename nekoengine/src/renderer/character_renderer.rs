@@ -136,14 +136,40 @@ impl CharacterRenderer {
     pub fn record_commands(
         &self,
         frame: &Frame,
-        frames: &Vec<Frame>,
-        extent: vk::Extent2D,
         swapchain: &Swapchain,
         texture_set: vk::DescriptorSet,
         render_frame: &RenderFrame,
     ) {
         let _main = tracy_client::span!("character renderer record commands");
         unsafe {
+            self.context.begin_rendering(
+                frame.command_buffer,
+                Some(swapchain.msaa_draw_image.image_view),
+                Some(swapchain.depth_image.image_view),
+                vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+                vk::Rect2D::default().extent(swapchain.extent),
+                None,
+                vk::AttachmentLoadOp::CLEAR,
+            );
+
+            self.context.device.cmd_set_viewport(
+                frame.command_buffer,
+                0,
+                &[vk::Viewport::default()
+                    .width(swapchain.extent.width as f32)
+                    .height(swapchain.extent.height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0)],
+            );
+
+            self.context.device.cmd_set_scissor(
+                frame.command_buffer,
+                0,
+                &[vk::Rect2D::default().extent(swapchain.extent)],
+            );
+
             self.context.device.cmd_bind_pipeline(
                 frame.command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -286,6 +312,8 @@ impl CharacterRenderer {
                     );
                 }
             }
+
+            self.context.device.cmd_end_rendering(frame.command_buffer);
         }
     }
 }

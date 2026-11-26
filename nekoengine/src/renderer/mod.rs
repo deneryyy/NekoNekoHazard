@@ -12,8 +12,7 @@ use parking_lot::Mutex;
 use winit::window::Window;
 
 use crate::{
-    Assets, Time,
-    gpu::{
+    Assets, Time, add_pass, gpu::{
         context::{AllocatedBuffer, RenderingContext},
         descriptor::{
             DescriptorAllocator, DescriptorLayoutBuilder, DescriptorWriter, PoolSizeRatio,
@@ -21,22 +20,13 @@ use crate::{
         profiler::GpuProfiler,
         staging::RingStagingBuffer,
         sync::FRAME_OVERLAP,
-    },
-    renderer::{
-        animation_data::{MAX_JOINTS, SkinDescriptors},
-        camera::{Camera, RenderCamera},
-        character_renderer::CharacterRenderer,
-        egui_renderer::EguiRenderer,
-        lighting::{
+    }, renderer::{
+        animation_data::{MAX_JOINTS, SkinDescriptors}, camera::{Camera, RenderCamera}, character_renderer::CharacterRenderer, egui_renderer::EguiRenderer, lighting::{
             CLUSTER_COUNT, CLUSTER_GRID, ClusterCuller, DirectionalLight, GpuDirectional, GpuLight,
             LightingParamsUniformBufferObject, MAX_LIGHTS, MAX_LIGHTS_PER_CLUSTER, PointLight,
             SpotLight,
-        },
-        post_processing::PostProcessing,
-        shadow_renderer::ShadowRenderer,
-        swapchain::Swapchain,
-    },
-    resources::{Resources, animation::Animator, pool::Handle, types::Model},
+        }, post_processing::PostProcessing, render_graph::{ImageAccess, ImportState, RenderGraph}, shadow_renderer::ShadowRenderer, swapchain::Swapchain,
+    }, resources::{Resources, animation::Animator, pool::Handle, types::Model},
 };
 use ash::vk::{self, CommandBufferUsageFlags};
 
@@ -46,6 +36,7 @@ pub mod character_renderer;
 pub mod egui_renderer;
 pub mod lighting;
 pub mod post_processing;
+pub mod render_graph;
 pub mod shadow_renderer;
 pub mod swapchain;
 
@@ -775,233 +766,149 @@ impl Renderer {
 
             Self::upload_uniform_buffer(&render_frame, &self.swapchain, frame);
 
-            let z = self.gpu_profiler.begin_zone(
-                &self.context.device,
-                frame.command_buffer,
-                frame_index,
-                tracy_client::span_location!("shadows"),
-            );
-            self.shadow_renderer.record_commands(frame, &render_frame);
-            self.gpu_profiler
-                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
-
-            let z = self.gpu_profiler.begin_zone(
-                &self.context.device,
-                frame.command_buffer,
-                frame_index,
-                tracy_client::span_location!("clustered_light_culler"),
-            );
-            self.cluster_culler.record_commands(frame);
-            self.gpu_profiler
-                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
-
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.msaa_draw_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::AccessFlags2::MEMORY_WRITE,
-                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-            );
-
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.resolve_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::AccessFlags2::MEMORY_WRITE,
-                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-            );
-
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.depth_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            let mut graph = RenderGraph::new();
+            let shadow_map = graph.import_image(
+                self.shadow_renderer.depth_map.image,
+                self.shadow_renderer.depth_map.image_view,
                 vk::ImageAspectFlags::DEPTH,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::AccessFlags2::MEMORY_WRITE,
-                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+                ImportState::previous_frame(),
+            );
+            let msaa_color = graph.import_image(
+                self.swapchain.msaa_draw_image.image,
+                self.swapchain.msaa_draw_image.image_view,
+                vk::ImageAspectFlags::COLOR,
+                ImportState::previous_frame(),
+            );
+            let depth = graph.import_image(
+                self.swapchain.depth_image.image,
+                self.swapchain.depth_image.image_view,
+                vk::ImageAspectFlags::DEPTH,
+                ImportState::previous_frame(),
+            );
+            let resolve = graph.import_image(
+                self.swapchain.resolve_image.image,
+                self.swapchain.resolve_image.image_view,
+                vk::ImageAspectFlags::COLOR,
+                ImportState::previous_frame(),
+            );
+            let wait_stage = vk::PipelineStageFlags2::TRANSFER;
+            let backbuffer = graph.import_image(
+                self.swapchain.images[image_index as usize],
+                self.swapchain.image_views[image_index as usize],
+                vk::ImageAspectFlags::COLOR,
+                ImportState::acquired(wait_stage),
+            );
+
+            let Renderer {
+                shadow_renderer,
+                cluster_culler,
+                character_renderer,
+                post_process,
+                egui_renderer,
+                ..
+            } = self;
+
+            add_pass!(
+                graph,
+                "shadows",
+                |b| b.use_image(shadow_map, ImageAccess::DepthAttachmentWrite),
+                |ctx| {
+                    shadow_renderer.record_commands(frame, render_frame);
+                }
+            );
+
+            add_pass!(
+                graph,
+                "cluster_cull",
+                |_| {}, // buffers: add BufferAccess uses once you have buffer support
+                |ctx| {
+                    cluster_culler.record_commands(frame);
+                }
             );
 
             let extent = self.swapchain.extent;
-
-            self.context.begin_rendering(
-                frame.command_buffer,
-                Some(self.swapchain.msaa_draw_image.image_view),
-                Some(self.swapchain.depth_image.image_view),
-                vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
+            add_pass!(
+                graph,
+                "characters",
+                |b| {
+                    b.use_image(shadow_map, ImageAccess::FragmentSampled);
+                    b.use_image(msaa_color, ImageAccess::ColorAttachmentWrite);
+                    b.use_image(depth, ImageAccess::DepthAttachmentWrite);
                 },
-                vk::Rect2D::default().extent(extent),
-                None,
-                vk::AttachmentLoadOp::CLEAR,
+                |ctx| {
+                    self.character_renderer.record_commands(
+                        frame,
+                        &self.swapchain,
+                        self.texture_descriptors,
+                        render_frame,
+                    );
+                }
             );
 
-            self.context.device.cmd_set_viewport(
-                frame.command_buffer,
-                0,
-                &[vk::Viewport::default()
-                    .width(extent.width as f32)
-                    .height(extent.height as f32)
-                    .min_depth(0.0)
-                    .max_depth(1.0)],
+            add_pass!(
+                graph,
+                "post_process",
+                |b| {
+                    b.use_image(msaa_color, ImageAccess::ComputeSampled);
+                    b.use_image(resolve, ImageAccess::ComputeStorageWrite);
+                },
+                |ctx| {
+                    post_process.record_commands(frame, &self.swapchain);
+                }
             );
 
-            self.context.device.cmd_set_scissor(
-                frame.command_buffer,
-                0,
-                &[vk::Rect2D::default().extent(extent)],
+            add_pass!(
+                graph,
+                "egui",
+                |b| b.use_image(resolve, ImageAccess::ColorAttachmentWrite),
+                |ctx| {
+                    self.egui_renderer
+                        .record_commands(
+                            &self.swapchain,
+                            frame,
+                            extent,
+                            self.context.queues[self.context.queue_families.graphics as usize],
+                        )
+                        .expect("Couldn't record egui renderer commands!");
+                }
             );
 
-            let z = self.gpu_profiler.begin_zone(
+            add_pass!(
+                graph,
+                "blit_to_swapchain",
+                |b| {
+                    b.use_image(resolve, ImageAccess::TransferSrc);
+                    b.use_image(backbuffer, ImageAccess::TransferDst);
+                },
+                |ctx| {
+                    self.context.copy_image_to_image(
+                        frame.command_buffer,
+                        self.swapchain.resolve_image.image,
+                        self.swapchain.images[image_index as usize],
+                        vk::Extent2D::default()
+                            .width(self.swapchain.resolve_image.extent.width)
+                            .height(self.swapchain.resolve_image.extent.height),
+                        self.swapchain.extent,
+                    );
+                }
+            );
+
+            add_pass!(
+                graph,
+                "present_transition",
+                |b| b.use_image(backbuffer, ImageAccess::Present),
+                |_| {}
+            );
+
+            graph.execute(
                 &self.context.device,
                 frame.command_buffer,
+                &mut self.gpu_profiler,
                 frame_index,
-                tracy_client::span_location!("characters"),
-            );
-            self.character_renderer.record_commands(
-                frame,
-                &self.frames,
-                extent,
-                &self.swapchain,
-                self.texture_descriptors,
-                render_frame,
-            );
-            self.gpu_profiler
-                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
-
-            self.context.device.cmd_end_rendering(frame.command_buffer);
-            let z = self.gpu_profiler.begin_zone(
-                &self.context.device,
-                frame.command_buffer,
-                frame_index,
-                tracy_client::span_location!("post_process"),
-            );
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.msaa_draw_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags2::COMPUTE_SHADER,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags2::SHADER_READ,
-            );
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.resolve_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::GENERAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags2::COMPUTE_SHADER,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags2::SHADER_WRITE,
-            );
-            self.post_process.record_commands(&frame, &self.swapchain);
-            self.gpu_profiler
-                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.resolve_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::GENERAL,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::COMPUTE_SHADER,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags2::SHADER_WRITE,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            );
-
-            let z = self.gpu_profiler.begin_zone(
-                &self.context.device,
-                frame.command_buffer,
-                frame_index,
-                tracy_client::span_location!("egui"),
-            );
-            self.egui_renderer.record_commands(
-                &self.swapchain,
-                frame,
-                extent,
-                self.context.queues[self.context.queue_families.graphics as usize],
-            )?;
-            self.gpu_profiler
-                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
-
-            //transition the resolve image and the swapchain image into their correct transfer layouts
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.resolve_image.image,
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags2::TRANSFER,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags2::TRANSFER_READ,
-            );
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.images[image_index as usize],
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::AccessFlags2::MEMORY_WRITE,
-                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             );
 
             // execute a copy from the resolve image into the swapchain
-            self.context.copy_image_to_image(
-                frame.command_buffer,
-                self.swapchain.resolve_image.image,
-                self.swapchain.images[image_index as usize],
-                vk::Extent2D::default()
-                    .width(self.swapchain.resolve_image.extent.width)
-                    .height(self.swapchain.resolve_image.extent.height),
-                self.swapchain.extent,
-            );
 
-            // set swapchain image layout to Present so we can show it on the screen
-            self.context.transition_image_layout(
-                frame.command_buffer,
-                self.swapchain.images[image_index as usize],
-                0,
-                vk::REMAINING_MIP_LEVELS,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::PRESENT_SRC_KHR,
-                vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::PipelineStageFlags2::ALL_COMMANDS,
-                vk::AccessFlags2::MEMORY_WRITE,
-                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-            );
             self.context
                 .device
                 .end_command_buffer(frame.command_buffer)?;
@@ -1018,7 +925,7 @@ impl Renderer {
                             .stage_mask(vk::PipelineStageFlags2::TRANSFER)])
                         .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
                             .semaphore(render_finished_semaphore)
-                            .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])
+                            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)])
                         .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
                             .command_buffer(frame.command_buffer)])],
                     frame.in_flight_fence,

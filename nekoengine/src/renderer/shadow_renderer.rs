@@ -42,7 +42,7 @@ pub struct ShadowRenderer {
     skin_set_layout: vk::DescriptorSetLayout,
     shadow_pipeline: vk::Pipeline,
     shadow_pipeline_layout: vk::PipelineLayout,
-    depth_map: AllocatedImage,
+    pub depth_map: AllocatedImage,
     resources: Arc<Mutex<Resources>>,
     allocator: Arc<Mutex<Allocator>>,
     context: Arc<RenderingContext>,
@@ -152,20 +152,6 @@ impl ShadowRenderer {
 
     pub fn record_commands(&self, frame: &Frame, render_frame: &RenderFrame) {
         let _main = tracy_client::span!("shadow renderer record commands");
-        self.context.transition_image_layout(
-            frame.command_buffer,
-            self.depth_map.image,
-            0,
-            vk::REMAINING_MIP_LEVELS,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            vk::ImageAspectFlags::DEPTH,
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-            vk::AccessFlags2::MEMORY_WRITE,
-            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-        );
-
         let extent = vk::Extent2D {
             width: SHADOW_WIDTH,
             height: SHADOW_HEIGHT,
@@ -333,20 +319,6 @@ impl ShadowRenderer {
 
             self.context.device.cmd_end_rendering(frame.command_buffer);
         }
-
-        self.context.transition_image_layout(
-            frame.command_buffer,
-            self.depth_map.image,
-            0,
-            vk::REMAINING_MIP_LEVELS,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::ImageAspectFlags::DEPTH,
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            vk::AccessFlags2::SHADER_READ,
-        );
     }
 }
 
