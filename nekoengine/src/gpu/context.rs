@@ -60,7 +60,7 @@ pub struct AllocatedBuffer {
 }
 
 pub struct RenderingContext {
-    pub msaa_samples: vk::SampleCountFlags,
+    pub msaa_samples: (vk::SampleCountFlags, u32),
     pub calibrated_timestamps: Option<ash::ext::calibrated_timestamps::Device>,
     pub use_buffer_device_address: bool,
     pub use_dynamic_rendering: bool,
@@ -330,6 +330,7 @@ impl RenderingContext {
             } else {
                 depth_samples
             };
+            let samples_num = 4;
             assert!(
                 samples.contains(vk::SampleCountFlags::TYPE_4),
                 "This device doesn't support MSAA"
@@ -397,7 +398,7 @@ impl RenderingContext {
             )?;
 
             Ok(Self {
-                msaa_samples: samples,
+                msaa_samples: (samples, samples_num),
                 calibrated_timestamps,
                 use_buffer_device_address,
                 use_dynamic_rendering,
@@ -890,6 +891,7 @@ impl RenderingContext {
         color_format: vk::Format,
         depth_format: vk::Format,
         samples: vk::SampleCountFlags,
+        resolve: bool,
     ) -> Result<vk::RenderPass> {
         let color_attachment = vk::AttachmentDescription::default()
             .format(color_format)
@@ -931,7 +933,11 @@ impl RenderingContext {
         let subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(std::slice::from_ref(&color_ref))
-            .resolve_attachments(std::slice::from_ref(&resolve_ref))
+            .resolve_attachments(if resolve {
+                std::slice::from_ref(&resolve_ref)
+            } else {
+                &[]
+            })
             .depth_stencil_attachment(&depth_ref);
 
         let dependency = vk::SubpassDependency::default()
@@ -942,11 +948,15 @@ impl RenderingContext {
             .src_access_mask(vk::AccessFlags::empty())
             .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
 
-        let attachments = [color_attachment, resolve_attachment, depth_attachment];
+        let attachments: &[vk::AttachmentDescription] = if resolve {
+            &[color_attachment, resolve_attachment, depth_attachment]
+        } else {
+            &[color_attachment, depth_attachment]
+        };
         let dependencies = [dependency];
 
         let render_pass_info = vk::RenderPassCreateInfo::default()
-            .attachments(&attachments)
+            .attachments(attachments)
             .subpasses(std::slice::from_ref(&subpass))
             .dependencies(&dependencies);
 

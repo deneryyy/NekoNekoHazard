@@ -174,7 +174,7 @@ impl CharacterRenderer {
             Default::default(),
             swapchain.main_render_pass,
             vertex_input_state,
-            context.msaa_samples,
+            context.msaa_samples.0,
         )?;
 
         unsafe {

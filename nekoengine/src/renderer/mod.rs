@@ -46,6 +46,7 @@ pub mod egui_renderer;
 pub mod lighting;
 pub mod shadow_renderer;
 pub mod swapchain;
+pub mod post_processing;
 
 #[derive(Component, Clone, Copy)]
 pub struct Transform {
@@ -833,7 +834,7 @@ impl Renderer {
                 vk::Rect2D::default().extent(extent),
                 self.swapchain.main_framebuffer,
                 self.swapchain.main_render_pass,
-                Some(&self.swapchain.resolve_image),
+                None, 
                 vk::AttachmentLoadOp::CLEAR,
             );
 

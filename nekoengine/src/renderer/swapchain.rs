@@ -77,7 +77,8 @@ impl Swapchain {
             main_render_pass = Some(context.create_msaa_render_pass(
                 msaa_draw_image.image_format,
                 depth_image.image_format,
-                context.msaa_samples,
+                context.msaa_samples.0,
+                false,
             )?);
             gui_render_pass = Some(context.create_render_pass(
                 Some(resolve_image.image_format),
@@ -294,7 +295,7 @@ impl Swapchain {
             vk::Format::D32_SFLOAT,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
             vk::ImageAspectFlags::DEPTH,
-            context.msaa_samples,
+            context.msaa_samples.0,
         )
     }
 
@@ -306,9 +307,10 @@ impl Swapchain {
         context.create_image(
             allocator,
             extent,
-            vk::Format::R16G16B16A16_SFLOAT,
+            vk::Format::R16G16B16A16_UNORM,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             vk::ImageAspectFlags::COLOR,
             vk::SampleCountFlags::TYPE_1,
@@ -326,9 +328,10 @@ impl Swapchain {
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::SAMPLED
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             vk::ImageAspectFlags::COLOR,
-            context.msaa_samples,
+            context.msaa_samples.0,
         )
     }
 
