@@ -23,16 +23,6 @@ struct CharacterPushConstants {
     base_color_factor: glam::Vec4,
 }
 
-#[repr(C, align(16))]
-struct LegacyCharacterPushConstants {
-    material_id: u32,
-    model: glam::Mat4,
-    skin_page: u32,
-    skin_delta: i32,
-    joint_offset: u32,
-    base_color_factor: glam::Vec4,
-}
-
 struct DrawItem {
     index_page: u32,
     vertex_page: u32,
@@ -78,17 +68,11 @@ impl CharacterRenderer {
         character_set_layouts.push(texture_set_layout);
         character_set_layouts.push(skin_set_layout);
         character_set_layouts.push(lighting_set_layout);
-        let character_push_constant_range = if context.use_buffer_device_address {
-            vk::PushConstantRange::default()
-                .offset(0)
-                .size(std::mem::size_of::<CharacterPushConstants>() as u32)
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
-        } else {
-            vk::PushConstantRange::default()
-                .offset(0)
-                .size(std::mem::size_of::<LegacyCharacterPushConstants>() as u32)
-                .stage_flags(vk::ShaderStageFlags::VERTEX)
-        };
+        let character_push_constant_range = vk::PushConstantRange::default()
+            .offset(0)
+            .size(std::mem::size_of::<CharacterPushConstants>() as u32)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
         let character_pipeline_layout = unsafe {
             context.device.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
@@ -104,63 +88,19 @@ impl CharacterRenderer {
             "/res/shaders/character_legacy.vert"
         ));
 
-        let character_shader = if context.use_buffer_device_address {
-            resources::load_shader_module(
-                bda_character_shader,
-                "character.vert",
-                ShaderKind::Vertex,
-                &context.device,
-            )?
-        } else {
-            resources::load_shader_module(
-                legacy_character_shader,
-                "character_legacy.vert",
-                ShaderKind::Vertex,
-                &context.device,
-            )?
-        };
+        let character_shader = resources::load_shader_module(
+            bda_character_shader,
+            "character.vert",
+            ShaderKind::Vertex,
+            &context.device,
+        )?;
+
         let fragment_shader = resources::load_shader_module(
             include_str!(concat!(env!("OUT_DIR"), "/res/shaders/character.frag")),
             "character.frag",
             ShaderKind::Fragment,
             &context.device,
         )?;
-
-        let binding_descriptions = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(std::mem::size_of::<ModelVertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)];
-
-        let attribute_descriptions = [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, uv1) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(2)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, normal) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(3)
-                .format(vk::Format::R32_SFLOAT)
-                .offset(std::mem::offset_of!(ModelVertex, uv2) as u32),
-        ];
-
-        let vertex_input_state = if context.use_buffer_device_address {
-            vk::PipelineVertexInputStateCreateInfo::default()
-        } else {
-            vk::PipelineVertexInputStateCreateInfo::default()
-                .vertex_binding_descriptions(&binding_descriptions)
-                .vertex_attribute_descriptions(&attribute_descriptions)
-        };
 
         let character_pipeline = context.create_graphics_pipeline(
             vk::Extent2D::default()
@@ -172,8 +112,7 @@ impl CharacterRenderer {
             fragment_shader,
             character_pipeline_layout,
             Default::default(),
-            swapchain.main_render_pass,
-            vertex_input_state,
+            vk::PipelineVertexInputStateCreateInfo::default(),
             context.msaa_samples.0,
         )?;
 
@@ -316,58 +255,26 @@ impl CharacterRenderer {
                         bound_index_page = item.index_page;
                     }
                     let page = geo.vertices.get_page(item.vertex_page as usize);
-                    if self.context.use_buffer_device_address {
-                        let push_constants = CharacterPushConstants {
-                            vertex_buffer: page.address().unwrap(),
-                            material_id: item.bindless_index,
-                            model: item.mesh_transform,
-                            skin_page: item.skin_page,
-                            skin_delta: item.skin_delta,
-                            joint_offset: item.joint_offset,
-                            base_color_factor: item.base_color_factor,
-                        };
+                    let push_constants = CharacterPushConstants {
+                        vertex_buffer: page.address().unwrap(),
+                        material_id: item.bindless_index,
+                        model: item.mesh_transform,
+                        skin_page: item.skin_page,
+                        skin_delta: item.skin_delta,
+                        joint_offset: item.joint_offset,
+                        base_color_factor: item.base_color_factor,
+                    };
 
-                        self.context.device.cmd_push_constants(
-                            frame.command_buffer,
-                            self.character_pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            std::slice::from_raw_parts(
-                                &push_constants as *const _ as *const u8,
-                                std::mem::size_of::<CharacterPushConstants>(),
-                            ),
-                        );
-                    } else {
-                        let legacy_push_constants = LegacyCharacterPushConstants {
-                            material_id: item.bindless_index,
-                            model: item.mesh_transform,
-                            skin_page: item.skin_page,
-                            skin_delta: item.skin_delta,
-                            joint_offset: item.joint_offset,
-                            base_color_factor: item.base_color_factor,
-                        };
-
-                        self.context.device.cmd_push_constants(
-                            frame.command_buffer,
-                            self.character_pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            std::slice::from_raw_parts(
-                                &legacy_push_constants as *const _ as *const u8,
-                                std::mem::size_of::<LegacyCharacterPushConstants>(),
-                            ),
-                        );
-
-                        if bound_vertex_page != item.vertex_page {
-                            self.context.device.cmd_bind_vertex_buffers(
-                                frame.command_buffer,
-                                0,
-                                &[page.vk_buffer()],
-                                &[0],
-                            );
-                            bound_vertex_page = item.vertex_page;
-                        }
-                    }
+                    self.context.device.cmd_push_constants(
+                        frame.command_buffer,
+                        self.character_pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        std::slice::from_raw_parts(
+                            &push_constants as *const _ as *const u8,
+                            std::mem::size_of::<CharacterPushConstants>(),
+                        ),
+                    );
 
                     self.context.device.cmd_draw_indexed(
                         frame.command_buffer,

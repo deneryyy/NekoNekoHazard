@@ -160,7 +160,7 @@ impl Renderer {
             device: context.device.clone(),
             physical_device: context.physical_device.handle,
             debug_settings: Default::default(),
-            buffer_device_address: context.use_buffer_device_address,
+            buffer_device_address: true,
             allocation_sizes: Default::default(),
         })?));
 
@@ -464,10 +464,7 @@ impl Renderer {
             )?;
 
             let cluster_culler = ClusterCuller::new(context.clone(), lighting_set_layout)?;
-            let post_process = PostProcessing::new(
-                context.clone(),
-                &swapchain,
-            )?;
+            let post_process = PostProcessing::new(context.clone(), &swapchain)?;
 
             Ok(Self {
                 post_process,
@@ -806,10 +803,10 @@ impl Renderer {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             );
 
             self.context.transition_image_layout(
@@ -820,10 +817,10 @@ impl Renderer {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             );
 
             self.context.transition_image_layout(
@@ -834,10 +831,10 @@ impl Renderer {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 vk::ImageAspectFlags::DEPTH,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             );
 
             let extent = self.swapchain.extent;
@@ -850,8 +847,6 @@ impl Renderer {
                     float32: [0.0, 0.0, 0.0, 1.0],
                 },
                 vk::Rect2D::default().extent(extent),
-                self.swapchain.main_framebuffer,
-                self.swapchain.main_render_pass,
                 None,
                 vk::AttachmentLoadOp::CLEAR,
             );
@@ -889,13 +884,7 @@ impl Renderer {
             self.gpu_profiler
                 .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
 
-            if self.context.use_dynamic_rendering {
-                self.context.device.cmd_end_rendering(frame.command_buffer);
-            } else {
-                self.context
-                    .device
-                    .cmd_end_render_pass(frame.command_buffer);
-            }
+            self.context.device.cmd_end_rendering(frame.command_buffer);
             let z = self.gpu_profiler.begin_zone(
                 &self.context.device,
                 frame.command_buffer,
@@ -910,10 +899,10 @@ impl Renderer {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags2::SHADER_READ,
             );
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -923,10 +912,10 @@ impl Renderer {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::GENERAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags2::SHADER_WRITE,
             );
             self.post_process.record_commands(&frame, &self.swapchain);
             self.gpu_profiler
@@ -939,10 +928,10 @@ impl Renderer {
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags::SHADER_WRITE,
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::SHADER_WRITE,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
             );
 
             let z = self.gpu_profiler.begin_zone(
@@ -969,10 +958,10 @@ impl Renderer {
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags2::TRANSFER_READ,
             );
             self.context.transition_image_layout(
                 frame.command_buffer,
@@ -982,10 +971,10 @@ impl Renderer {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             );
 
             // execute a copy from the resolve image into the swapchain
@@ -1008,10 +997,10 @@ impl Renderer {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::PRESENT_SRC_KHR,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
             );
             self.context
                 .device
@@ -1021,38 +1010,19 @@ impl Renderer {
 
             {
                 let _s = tracy_client::span!("queue_submit");
-                if self.context.use_sync2 {
-                    self.context.device.queue_submit2(
-                        self.context.queues[self.context.queue_families.graphics as usize],
-                        &[vk::SubmitInfo2::default()
-                            .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
-                                .semaphore(frame.image_available_semaphore)
-                                .stage_mask(vk::PipelineStageFlags2::TRANSFER)])
-                            .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
-                                .semaphore(render_finished_semaphore)
-                                .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])
-                            .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
-                                .command_buffer(frame.command_buffer)])],
-                        frame.in_flight_fence,
-                    )?;
-                } else {
-                    let wait_semaphores = [frame.image_available_semaphore];
-                    let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                    let signal_semaphores = [render_finished_semaphore];
-                    let command_buffers = [frame.command_buffer];
-
-                    let submit_info = vk::SubmitInfo::default()
-                        .wait_semaphores(&wait_semaphores)
-                        .wait_dst_stage_mask(&wait_stages)
-                        .signal_semaphores(&signal_semaphores)
-                        .command_buffers(&command_buffers);
-
-                    self.context.device.queue_submit(
-                        self.context.queues[self.context.queue_families.graphics as usize],
-                        &[submit_info],
-                        frame.in_flight_fence,
-                    )?;
-                }
+                self.context.device.queue_submit2(
+                    self.context.queues[self.context.queue_families.graphics as usize],
+                    &[vk::SubmitInfo2::default()
+                        .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                            .semaphore(frame.image_available_semaphore)
+                            .stage_mask(vk::PipelineStageFlags2::TRANSFER)])
+                        .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                            .semaphore(render_finished_semaphore)
+                            .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])
+                        .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
+                            .command_buffer(frame.command_buffer)])],
+                    frame.in_flight_fence,
+                )?;
             }
             {
                 let _s = tracy_client::span!("present");

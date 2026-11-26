@@ -65,14 +65,10 @@ impl BufferPage {
         unit_size: u64,
         capacity: u32,
     ) -> Result<Self> {
-        let usage = if context.use_buffer_device_address {
-            vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                | vk::BufferUsageFlags::VERTEX_BUFFER
-        } else {
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER
-        };
+        let usage = vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+            | vk::BufferUsageFlags::VERTEX_BUFFER;
 
         Self::new(
             context,
@@ -109,13 +105,9 @@ impl BufferPage {
         unit_size: u64,
         capacity: u32,
     ) -> Result<Self> {
-        let usage = if context.use_buffer_device_address {
-            vk::BufferUsageFlags::STORAGE_BUFFER
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-        } else {
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER
-        };
+        let usage = vk::BufferUsageFlags::STORAGE_BUFFER
+            | vk::BufferUsageFlags::TRANSFER_DST
+            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 
         Self::new(
             context,
@@ -150,7 +142,7 @@ impl BufferPage {
             gpu_allocator::MemoryLocation::GpuOnly,
         )?;
         let address = unsafe {
-            if context.use_buffer_device_address && enable_address {
+            if enable_address {
                 Some(context.device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer),
                 ))
@@ -285,7 +277,12 @@ impl GeometryPool {
                 VERTEX_SIZE,
                 VERTEX_PAGE_UNITS,
             ),
-            indices: TypedPool::new(context.clone(), allocator.clone(), INDEX_SIZE, INDEX_PAGE_UNITS),
+            indices: TypedPool::new(
+                context.clone(),
+                allocator.clone(),
+                INDEX_SIZE,
+                INDEX_PAGE_UNITS,
+            ),
             skins: TypedPool::new(context, allocator, SKIN_SIZE, SKIN_PAGE_UNITS),
         })
     }

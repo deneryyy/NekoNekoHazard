@@ -11,10 +11,6 @@ use crate::gpu::context::{AllocatedImage, RenderingContext, Surface};
 
 pub struct Swapchain {
     allocator: Allocator,
-    pub gui_framebuffer: Option<vk::Framebuffer>,
-    pub gui_render_pass: Option<vk::RenderPass>,
-    pub main_framebuffer: Option<vk::Framebuffer>,
-    pub main_render_pass: Option<vk::RenderPass>,
     pub depth_image: AllocatedImage,
     pub resolve_image: AllocatedImage,
     pub msaa_draw_image: AllocatedImage,
@@ -57,7 +53,7 @@ impl Swapchain {
             device: context.device.clone(),
             physical_device: context.physical_device.handle,
             debug_settings: Default::default(),
-            buffer_device_address: context.use_buffer_device_address,
+            buffer_device_address: true,
             allocation_sizes: Default::default(),
         })?;
 
@@ -71,46 +67,8 @@ impl Swapchain {
         let resolve_image = Self::create_resolve_image(extent_3d, context.clone(), &mut allocator)?;
         let depth_image = Self::create_depth_image(extent_3d, context.clone(), &mut allocator)?;
 
-        let mut main_render_pass = None;
-        let mut gui_render_pass = None;
-        if !context.use_dynamic_rendering {
-            main_render_pass = Some(context.create_msaa_render_pass(
-                msaa_draw_image.image_format,
-                depth_image.image_format,
-                context.msaa_samples.0,
-                false,
-            )?);
-            gui_render_pass = Some(context.create_render_pass(
-                Some(resolve_image.image_format),
-                None,
-                vk::AttachmentLoadOp::LOAD,
-            )?);
-        }
-
-        let mut main_framebuffer = None;
-        let mut gui_framebuffer = None;
-        if !context.use_dynamic_rendering {
-            main_framebuffer = Some(context.create_msaa_framebuffer(
-                msaa_draw_image.image_view,
-                resolve_image.image_view,
-                depth_image.image_view,
-                extent,
-                main_render_pass.unwrap(),
-            )?);
-            gui_framebuffer = Some(context.create_framebuffer(
-                Some(resolve_image.image_view),
-                None,
-                extent,
-                gui_render_pass.unwrap(),
-            )?);
-        }
-
         Ok(Self {
             allocator,
-            gui_framebuffer,
-            gui_render_pass,
-            main_framebuffer,
-            main_render_pass,
             depth_image,
             resolve_image,
             msaa_draw_image,
@@ -213,13 +171,6 @@ impl Swapchain {
                 )
                 .context("create_swapchain")?;
 
-            if let Some(fb) = self.main_framebuffer.take() {
-                self.context.device.destroy_framebuffer(fb, None);
-            }
-            if let Some(fb) = self.gui_framebuffer.take() {
-                self.context.device.destroy_framebuffer(fb, None);
-            }
-
             self.image_views.drain(..).for_each(|image_view| {
                 self.context.device.destroy_image_view(image_view, None);
             });
@@ -262,23 +213,6 @@ impl Swapchain {
             self.depth_image =
                 Self::create_depth_image(extent_3d, self.context.clone(), &mut self.allocator)?;
 
-            if !self.context.use_dynamic_rendering {
-                let mfb = self.context.create_msaa_framebuffer(
-                    self.msaa_draw_image.image_view,
-                    self.resolve_image.image_view,
-                    self.depth_image.image_view,
-                    self.extent,
-                    self.main_render_pass.unwrap(),
-                )?;
-                self.main_framebuffer = Some(mfb);
-                let gui_fb = self.context.create_framebuffer(
-                    Some(self.resolve_image.image_view),
-                    None,
-                    self.extent,
-                    self.gui_render_pass.unwrap(),
-                )?;
-                self.gui_framebuffer = Some(gui_fb);
-            }
         }
 
         Ok(())
@@ -398,20 +332,6 @@ impl Swapchain {
 impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
-            if !self.context.use_dynamic_rendering {
-                self.context
-                    .device
-                    .destroy_render_pass(self.main_render_pass.unwrap(), None);
-                self.context
-                    .device
-                    .destroy_render_pass(self.gui_render_pass.unwrap(), None);
-            }
-            if let Some(fb) = self.main_framebuffer.take() {
-                self.context.device.destroy_framebuffer(fb, None);
-            }
-            if let Some(fb) = self.gui_framebuffer.take() {
-                self.context.device.destroy_framebuffer(fb, None);
-            }
             self.image_views.drain(..).for_each(|image_view| {
                 self.context.device.destroy_image_view(image_view, None);
             });

@@ -42,8 +42,6 @@ pub struct ShadowRenderer {
     skin_set_layout: vk::DescriptorSetLayout,
     shadow_pipeline: vk::Pipeline,
     shadow_pipeline_layout: vk::PipelineLayout,
-    framebuffer: Option<vk::Framebuffer>,
-    render_pass: Option<vk::RenderPass>,
     depth_map: AllocatedImage,
     resources: Arc<Mutex<Resources>>,
     allocator: Arc<Mutex<Allocator>>,
@@ -72,29 +70,11 @@ impl ShadowRenderer {
             vk::SampleCountFlags::TYPE_1,
         )?;
 
-        let mut render_pass = None;
-        if !context.use_dynamic_rendering {
-            render_pass = Some(context.create_render_pass(
-                None,
-                Some(depth_map.image_format),
-                vk::AttachmentLoadOp::CLEAR,
-            )?);
-        }
-
         let extent = vk::Extent2D {
             width: SHADOW_WIDTH,
             height: SHADOW_HEIGHT,
         };
 
-        let mut framebuffer = None;
-        if !context.use_dynamic_rendering {
-            framebuffer = Some(context.create_framebuffer(
-                None,
-                Some(depth_map.image_view),
-                extent,
-                render_pass.unwrap(),
-            )?);
-        }
         let push_constant_range = vk::PushConstantRange::default()
             .offset(0)
             .size(std::mem::size_of::<ShadowPushConstants>() as u32)
@@ -149,7 +129,6 @@ impl ShadowRenderer {
             fragment_shader,
             shadow_pipeline_layout,
             Default::default(),
-            render_pass,
             vertex_input_state,
             vk::SampleCountFlags::TYPE_1,
         )?;
@@ -164,8 +143,6 @@ impl ShadowRenderer {
             skin_set_layout,
             shadow_pipeline,
             shadow_pipeline_layout,
-            framebuffer,
-            render_pass,
             depth_map,
             resources,
             allocator,
@@ -183,10 +160,10 @@ impl ShadowRenderer {
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             vk::ImageAspectFlags::DEPTH,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::AccessFlags::MEMORY_WRITE,
-            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+            vk::AccessFlags2::MEMORY_WRITE,
+            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
         );
 
         let extent = vk::Extent2D {
@@ -202,8 +179,6 @@ impl ShadowRenderer {
                 float32: [0.0, 0.0, 0.0, 1.0],
             },
             vk::Rect2D::default().extent(extent),
-            self.framebuffer,
-            self.render_pass,
             None,
             vk::AttachmentLoadOp::CLEAR,
         );
@@ -356,13 +331,7 @@ impl ShadowRenderer {
                 }
             }
 
-            if self.context.use_dynamic_rendering {
-                self.context.device.cmd_end_rendering(frame.command_buffer);
-            } else {
-                self.context
-                    .device
-                    .cmd_end_render_pass(frame.command_buffer);
-            }
+            self.context.device.cmd_end_rendering(frame.command_buffer);
         }
 
         self.context.transition_image_layout(
@@ -373,10 +342,10 @@ impl ShadowRenderer {
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             vk::ImageAspectFlags::DEPTH,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::PipelineStageFlags::ALL_COMMANDS,
-            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            vk::AccessFlags::SHADER_READ,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::AccessFlags2::SHADER_READ,
         );
     }
 }
@@ -384,14 +353,6 @@ impl ShadowRenderer {
 impl Drop for ShadowRenderer {
     fn drop(&mut self) {
         unsafe {
-            if !self.context.use_dynamic_rendering {
-                self.context
-                    .device
-                    .destroy_render_pass(self.render_pass.unwrap(), None);
-            }
-            if let Some(fb) = self.framebuffer.take() {
-                self.context.device.destroy_framebuffer(fb, None);
-            }
             self.context
                 .device
                 .destroy_pipeline_layout(self.shadow_pipeline_layout, None);

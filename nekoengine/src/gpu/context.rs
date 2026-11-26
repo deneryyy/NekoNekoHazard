@@ -2,7 +2,6 @@ use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Ok, Result};
 use ash::ext::debug_utils;
-use ash::khr::push_descriptor;
 use ash::vk::{
     self, BufferCreateInfo, CommandBufferUsageFlags, PipelineDepthStencilStateCreateInfo,
     RenderingAttachmentInfo,
@@ -62,12 +61,6 @@ pub struct AllocatedBuffer {
 pub struct RenderingContext {
     pub msaa_samples: (vk::SampleCountFlags, u32),
     pub calibrated_timestamps: Option<ash::ext::calibrated_timestamps::Device>,
-    pub use_buffer_device_address: bool,
-    pub use_dynamic_rendering: bool,
-    pub use_sync2: bool,
-    imm_fence: vk::Fence,
-    imm_command_buffer: vk::CommandBuffer,
-    imm_command_pool: vk::CommandPool,
     pub queues: Vec<vk::Queue>,
     pub swapchain_extension: ash::khr::swapchain::Device,
     pub device: ash::Device,
@@ -286,18 +279,10 @@ impl RenderingContext {
             instance.get_physical_device_features2(physical_device.handle, &mut f2);
 
             let device_api = physical_device.properties.api_version;
-            let use_sync2 = device_api >= vk::API_VERSION_1_3 && v13.synchronization2 != 0;
-            let use_dynamic_rendering =
-                device_api >= vk::API_VERSION_1_3 && v13.dynamic_rendering != 0;
-            let use_buffer_device_address =
-                device_api >= vk::API_VERSION_1_2 && v12.buffer_device_address != 0;
             assert!(
-                device_api > vk::API_VERSION_1_2,
-                "This engine supports only vulkan 1.2 or upwards!"
+                device_api > vk::API_VERSION_1_3,
+                "This engine supports only vulkan 1.3 or upwards!"
             );
-            info!("using sync2: {}", use_sync2);
-            info!("using dynamic rendering: {}", use_dynamic_rendering);
-            info!("using buffer device address: {}", use_buffer_device_address);
 
             let available =
                 instance.enumerate_device_extension_properties(physical_device.handle)?;
@@ -342,10 +327,10 @@ impl RenderingContext {
             }
 
             let mut v13_features = vk::PhysicalDeviceVulkan13Features::default()
-                .dynamic_rendering(use_dynamic_rendering)
-                .synchronization2(use_sync2);
+                .dynamic_rendering(true)
+                .synchronization2(true);
             let mut v12_features = vk::PhysicalDeviceVulkan12Features::default()
-                .buffer_device_address(use_buffer_device_address)
+                .buffer_device_address(true)
                 .descriptor_indexing(true)
                 .descriptor_binding_storage_image_update_after_bind(true)
                 .descriptor_binding_sampled_image_update_after_bind(true)
@@ -374,38 +359,9 @@ impl RenderingContext {
                 .map(|index| device.get_device_queue(*index, 0))
                 .collect::<Vec<_>>();
 
-            let imm_command_pool = device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(queue_families.graphics)
-                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                None,
-            )?;
-
-            let &imm_command_buffer = device
-                .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .command_pool(imm_command_pool)
-                        .level(vk::CommandBufferLevel::PRIMARY)
-                        .command_buffer_count(1),
-                )?
-                .iter()
-                .next()
-                .unwrap();
-
-            let imm_fence = device.create_fence(
-                &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
-                None,
-            )?;
-
             Ok(Self {
                 msaa_samples: (samples, samples_num),
                 calibrated_timestamps,
-                use_buffer_device_address,
-                use_dynamic_rendering,
-                use_sync2,
-                imm_fence,
-                imm_command_buffer,
-                imm_command_pool,
                 queues,
                 swapchain_extension,
                 device,
@@ -549,10 +505,10 @@ impl RenderingContext {
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         aspect_mask: vk::ImageAspectFlags,
-        src_stage: vk::PipelineStageFlags,
-        dst_stage: vk::PipelineStageFlags,
-        src_access: vk::AccessFlags,
-        dst_access: vk::AccessFlags,
+        src_stage: vk::PipelineStageFlags2,
+        dst_stage: vk::PipelineStageFlags2,
+        src_access: vk::AccessFlags2,
+        dst_access: vk::AccessFlags2,
     ) {
         unsafe {
             let range = vk::ImageSubresourceRange::default()
@@ -562,42 +518,20 @@ impl RenderingContext {
                 .base_array_layer(0)
                 .layer_count(vk::REMAINING_ARRAY_LAYERS);
 
-            if self.use_sync2 {
-                let barrier = vk::ImageMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::from_raw(src_stage.as_raw() as u64))
-                    .src_access_mask(vk::AccessFlags2::from_raw(src_access.as_raw() as u64))
-                    .dst_stage_mask(vk::PipelineStageFlags2::from_raw(dst_stage.as_raw() as u64))
-                    .dst_access_mask(vk::AccessFlags2::from_raw(dst_access.as_raw() as u64))
-                    .old_layout(old_layout)
-                    .new_layout(new_layout)
-                    .image(image)
-                    .subresource_range(range);
+            let barrier = vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(src_stage)
+                .src_access_mask(src_access)
+                .dst_stage_mask(dst_stage)
+                .dst_access_mask(dst_access)
+                .old_layout(old_layout)
+                .new_layout(new_layout)
+                .image(image)
+                .subresource_range(range);
 
-                self.device.cmd_pipeline_barrier2(
-                    command_buffer,
-                    &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
-                );
-            } else {
-                let barrier = vk::ImageMemoryBarrier::default()
-                    .src_access_mask(src_access)
-                    .dst_access_mask(dst_access)
-                    .old_layout(old_layout)
-                    .new_layout(new_layout)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(image)
-                    .subresource_range(range);
-
-                self.device.cmd_pipeline_barrier(
-                    command_buffer,
-                    src_stage,
-                    dst_stage,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier],
-                );
-            }
+            self.device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default().image_memory_barriers(&[barrier]),
+            );
         }
     }
 
@@ -652,51 +586,6 @@ impl RenderingContext {
         }
     }
 
-    pub fn begin_immediate_submit(&self) -> Result<vk::CommandBuffer> {
-        unsafe {
-            self.device.reset_fences(&[self.imm_fence])?;
-            self.device.reset_command_buffer(
-                self.imm_command_buffer,
-                vk::CommandBufferResetFlags::empty(),
-            )?;
-            self.device.begin_command_buffer(
-                self.imm_command_buffer,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )?;
-
-            Ok(self.imm_command_buffer)
-        }
-    }
-
-    pub fn end_immediate_submit(&self) -> Result<()> {
-        unsafe {
-            self.device.end_command_buffer(self.imm_command_buffer)?;
-
-            if self.use_sync2 {
-                self.device.queue_submit2(
-                    self.queues[self.queue_families.graphics as usize],
-                    &[vk::SubmitInfo2::default()
-                        .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
-                            .command_buffer(self.imm_command_buffer)])],
-                    self.imm_fence,
-                )?;
-            } else {
-                let submit_info = vk::SubmitInfo::default()
-                    .command_buffers(std::slice::from_ref(&self.imm_command_buffer));
-
-                self.device.queue_submit(
-                    self.queues[self.queue_families.graphics as usize],
-                    &[submit_info],
-                    self.imm_fence,
-                )?;
-            }
-            self.device
-                .wait_for_fences(&[self.imm_fence], true, u64::MAX)?;
-            Ok(())
-        }
-    }
-
     pub fn create_graphics_pipeline<'a>(
         &self,
         extent: vk::Extent2D,
@@ -706,7 +595,6 @@ impl RenderingContext {
         fragment_shader: vk::ShaderModule,
         pipeline_layout: vk::PipelineLayout,
         pipeline_cache: vk::PipelineCache,
-        render_pass: Option<vk::RenderPass>,
         vertex_input_state: vk::PipelineVertexInputStateCreateInfo<'a>,
         samples: vk::SampleCountFlags,
     ) -> Result<vk::Pipeline> {
@@ -776,7 +664,6 @@ impl RenderingContext {
                                 .min_depth_bounds(0.0)
                                 .max_depth_bounds(1.0),
                         )
-                        .render_pass(render_pass.unwrap_or(vk::RenderPass::null()))
                         .push_next(
                             &mut vk::PipelineRenderingCreateInfo::default()
                                 .color_attachment_formats(
@@ -802,87 +689,56 @@ impl RenderingContext {
         depth_view: Option<vk::ImageView>,
         clear_color: vk::ClearColorValue,
         render_area: vk::Rect2D,
-        framebuffer: Option<vk::Framebuffer>,
-        main_render_pass: Option<vk::RenderPass>,
         resolve_image: Option<&AllocatedImage>,
         load_op: vk::AttachmentLoadOp,
     ) {
         unsafe {
-            if self.use_dynamic_rendering {
-                self.device.cmd_begin_rendering(
-                    command_buffer,
-                    &vk::RenderingInfo::default()
-                        .layer_count(1)
-                        .color_attachments(&color_view.map_or(vec![], |view| {
-                            vec![
-                                vk::RenderingAttachmentInfo::default()
-                                    .image_view(view)
-                                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                                    .clear_value(vk::ClearValue { color: clear_color })
-                                    .load_op(load_op)
-                                    .store_op(vk::AttachmentStoreOp::STORE)
-                                    .resolve_mode(
-                                        resolve_image.map_or(vk::ResolveModeFlags::NONE, |_| {
-                                            vk::ResolveModeFlags::AVERAGE
-                                        }),
-                                    )
-                                    .resolve_image_view(
-                                        resolve_image.map_or(vk::ImageView::null(), |image| {
-                                            image.image_view
-                                        }),
-                                    )
-                                    .resolve_image_layout(
-                                        resolve_image.map_or(vk::ImageLayout::UNDEFINED, |_| {
-                                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-                                        }),
-                                    ),
-                            ]
-                        }))
-                        .depth_attachment(&depth_view.map_or(
-                            RenderingAttachmentInfo::default(),
-                            |view| {
-                                RenderingAttachmentInfo::default()
-                                    .image_view(view)
-                                    .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                                    .clear_value(vk::ClearValue {
-                                        depth_stencil: vk::ClearDepthStencilValue {
-                                            depth: 1.0,
-                                            stencil: 0,
-                                        },
-                                    })
-                                    .load_op(load_op)
-                                    .store_op(vk::AttachmentStoreOp::STORE)
-                            },
-                        ))
-                        .render_area(render_area),
-                );
-            } else {
-                let mut clear_values = Vec::new();
-                if color_view.is_some() {
-                    clear_values.push(vk::ClearValue { color: clear_color });
-                }
-                if resolve_image.is_some() {
-                    clear_values.push(vk::ClearValue { color: clear_color });
-                }
-                if depth_view.is_some() {
-                    clear_values.push(vk::ClearValue {
-                        depth_stencil: vk::ClearDepthStencilValue {
-                            depth: 1.0,
-                            stencil: 0,
+            self.device.cmd_begin_rendering(
+                command_buffer,
+                &vk::RenderingInfo::default()
+                    .layer_count(1)
+                    .color_attachments(&color_view.map_or(vec![], |view| {
+                        vec![
+                            vk::RenderingAttachmentInfo::default()
+                                .image_view(view)
+                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .clear_value(vk::ClearValue { color: clear_color })
+                                .load_op(load_op)
+                                .store_op(vk::AttachmentStoreOp::STORE)
+                                .resolve_mode(
+                                    resolve_image.map_or(vk::ResolveModeFlags::NONE, |_| {
+                                        vk::ResolveModeFlags::AVERAGE
+                                    }),
+                                )
+                                .resolve_image_view(
+                                    resolve_image
+                                        .map_or(vk::ImageView::null(), |image| image.image_view),
+                                )
+                                .resolve_image_layout(
+                                    resolve_image.map_or(vk::ImageLayout::UNDEFINED, |_| {
+                                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                                    }),
+                                ),
+                        ]
+                    }))
+                    .depth_attachment(&depth_view.map_or(
+                        RenderingAttachmentInfo::default(),
+                        |view| {
+                            RenderingAttachmentInfo::default()
+                                .image_view(view)
+                                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                .clear_value(vk::ClearValue {
+                                    depth_stencil: vk::ClearDepthStencilValue {
+                                        depth: 1.0,
+                                        stencil: 0,
+                                    },
+                                })
+                                .load_op(load_op)
+                                .store_op(vk::AttachmentStoreOp::STORE)
                         },
-                    });
-                }
-                let begin = vk::RenderPassBeginInfo::default()
-                    .render_pass(main_render_pass.unwrap())
-                    .framebuffer(framebuffer.unwrap())
-                    .render_area(render_area)
-                    .clear_values(&clear_values);
-                self.device.cmd_begin_render_pass(
-                    command_buffer,
-                    &begin,
-                    vk::SubpassContents::INLINE,
-                );
-            }
+                    ))
+                    .render_area(render_area),
+            );
         }
     }
 
@@ -997,7 +853,7 @@ impl RenderingContext {
             .attachment(0)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         let depth_ref = vk::AttachmentReference::default()
-            .attachment(color_format.map_or(0, |format| 1))
+            .attachment(color_format.map_or(0, |_| 1))
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
         let mut subpass =
@@ -1130,9 +986,6 @@ impl Drop for RenderingContext {
         unsafe {
             self.surface_extension
                 .destroy_surface(self.surface.handle, None);
-            self.device.destroy_fence(self.imm_fence, None);
-            self.device
-                .destroy_command_pool(self.imm_command_pool, None);
             self.device.destroy_device(None);
             if let Some((loader, messenger)) = self.debug_messenger.take() {
                 loader.destroy_debug_utils_messenger(messenger, None);

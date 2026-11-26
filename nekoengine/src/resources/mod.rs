@@ -43,7 +43,7 @@ impl Resources {
             device: context.device.clone(),
             physical_device: context.physical_device.handle,
             debug_settings: Default::default(),
-            buffer_device_address: context.use_buffer_device_address,
+            buffer_device_address: true,
             allocation_sizes: Default::default(),
         })?));
         Ok(Self {

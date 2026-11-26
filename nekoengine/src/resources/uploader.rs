@@ -86,24 +86,14 @@ impl Uploader {
         unsafe {
             self.context.device.end_command_buffer(self.cmd)?;
 
-            if self.context.use_sync2 {
-                self.context.device.queue_submit2(
-                    self.context.queues[self.context.queue_families.graphics as usize],
-                    &[vk::SubmitInfo2::default().command_buffer_infos(&[
-                        vk::CommandBufferSubmitInfo::default().command_buffer(self.cmd),
-                    ])],
-                    self.fence,
-                )?;
-            } else {
-                let submit_info =
-                    vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&self.cmd));
+            self.context.device.queue_submit2(
+                self.context.queues[self.context.queue_families.graphics as usize],
+                &[vk::SubmitInfo2::default().command_buffer_infos(&[
+                    vk::CommandBufferSubmitInfo::default().command_buffer(self.cmd),
+                ])],
+                self.fence,
+            )?;
 
-                self.context.device.queue_submit(
-                    self.context.queues[self.context.queue_families.graphics as usize],
-                    &[submit_info],
-                    self.fence,
-                )?;
-            }
             self.context
                 .device
                 .wait_for_fences(&[self.fence], true, u64::MAX)?;
@@ -195,10 +185,10 @@ impl Uploader {
                 vk::ImageLayout::UNDEFINED,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::MEMORY_READ,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
             );
             self.context.device.cmd_copy_buffer_to_image(
                 self.cmd,
@@ -227,10 +217,10 @@ impl Uploader {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::ImageAspectFlags::COLOR,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::PipelineStageFlags::ALL_COMMANDS,
-                vk::AccessFlags::MEMORY_WRITE,
-                vk::AccessFlags::MEMORY_WRITE | vk::AccessFlags::MEMORY_READ,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE,
+                vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
             );
         }
 
@@ -241,12 +231,12 @@ impl Uploader {
 impl Drop for Uploader {
     fn drop(&mut self) {
         unsafe {
-            self.context.destroy_buffer(
-                &mut self.allocator.lock(),
-                &mut self.ring.buffer,
-            );
+            self.context
+                .destroy_buffer(&mut self.allocator.lock(), &mut self.ring.buffer);
             self.context.device.destroy_fence(self.fence, None);
-            self.context.device.destroy_command_pool(self.command_pool, None);
+            self.context
+                .device
+                .destroy_command_pool(self.command_pool, None);
         }
     }
 }

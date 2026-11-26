@@ -40,8 +40,8 @@ void main() {
     vec3 acc = vec3(0.0);
     for (int i = 0; i < SAMPLES; i++) {
         vec3 c = texelFetch(hdr_msaa, p, i).rgb * pc.exposure;
-        acc += tonemap_neutral(c);       // tone map per sample...
+        acc += tonemap_neutral(c); 
     }
-    acc /= float(SAMPLES);               // ...then average
+    acc /= float(SAMPLES);
     imageStore(out_img, p, vec4(linear_to_srgb(acc), 1.0));
 }

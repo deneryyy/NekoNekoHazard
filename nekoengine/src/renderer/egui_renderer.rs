@@ -52,15 +52,11 @@ impl EguiRenderer {
                 },
             )?;
 
-            let render_mode = if context.use_dynamic_rendering {
-                RenderMode::DynamicRendering(DynamicRendering {
-                    color_attachment_format: swapchain.resolve_image.image_format,
-                    depth_attachment_format: None,
-                    stencil_attachment_format: None,
-                })
-            } else {
-                RenderMode::RenderPass(swapchain.gui_render_pass.unwrap())
-            };
+            let render_mode = RenderMode::DynamicRendering(DynamicRendering {
+                color_attachment_format: swapchain.resolve_image.image_format,
+                depth_attachment_format: None,
+                stencil_attachment_format: None,
+            });
             Renderer::with_allocator(
                 GpuAllocator::new(std::sync::Arc::new(std::sync::Mutex::new(allocator))),
                 context.device.clone(),
@@ -120,8 +116,6 @@ impl EguiRenderer {
                 float32: [0.0, 0.0, 0.0, 1.0],
             },
             vk::Rect2D::default().extent(extent),
-            swapchain.gui_framebuffer,
-            swapchain.gui_render_pass,
             None,
             vk::AttachmentLoadOp::LOAD,
         );
@@ -277,13 +271,7 @@ impl EguiRenderer {
         }
 
         unsafe {
-            if self.context.use_dynamic_rendering {
-                self.context.device.cmd_end_rendering(frame.command_buffer);
-            } else {
-                self.context
-                    .device
-                    .cmd_end_render_pass(frame.command_buffer);
-            }
+            self.context.device.cmd_end_rendering(frame.command_buffer);
         }
 
         Ok(())
