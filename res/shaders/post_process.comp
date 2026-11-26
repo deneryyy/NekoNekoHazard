@@ -1,4 +1,5 @@
 #version 450
+#extension  GL_EXT_samplerless_texture_functions : require
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(constant_id = 0) const int SAMPLES = 4;

@@ -32,6 +32,7 @@ use crate::{
             LightingParamsUniformBufferObject, MAX_LIGHTS, MAX_LIGHTS_PER_CLUSTER, PointLight,
             SpotLight,
         },
+        post_processing::PostProcessing,
         shadow_renderer::ShadowRenderer,
         swapchain::Swapchain,
     },
@@ -44,9 +45,9 @@ pub mod camera;
 pub mod character_renderer;
 pub mod egui_renderer;
 pub mod lighting;
+pub mod post_processing;
 pub mod shadow_renderer;
 pub mod swapchain;
-pub mod post_processing;
 
 #[derive(Component, Clone, Copy)]
 pub struct Transform {
@@ -124,6 +125,7 @@ pub struct ToonParamsUniformBufferObject {
 }
 
 pub struct Renderer {
+    post_process: PostProcessing,
     cluster_culler: ClusterCuller,
     shadow_renderer: ShadowRenderer,
     pub egui_renderer: EguiRenderer,
@@ -170,6 +172,14 @@ impl Renderer {
             PoolSizeRatio {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
                 per_set: 5.0,
+            },
+            PoolSizeRatio {
+                ty: vk::DescriptorType::SAMPLED_IMAGE,
+                per_set: 1.0,
+            },
+            PoolSizeRatio {
+                ty: vk::DescriptorType::STORAGE_IMAGE,
+                per_set: 1.0,
             },
         ]);
         let mut global_descriptor_allocator = DescriptorAllocator::new(
@@ -454,8 +464,13 @@ impl Renderer {
             )?;
 
             let cluster_culler = ClusterCuller::new(context.clone(), lighting_set_layout)?;
+            let post_process = PostProcessing::new(
+                context.clone(),
+                &swapchain,
+            )?;
 
             Ok(Self {
+                post_process,
                 cluster_culler,
                 shadow_renderer,
                 egui_renderer,
@@ -488,7 +503,9 @@ impl Renderer {
     }
 
     pub fn resize(&mut self) -> Result<()> {
-        self.swapchain.resize()
+        self.swapchain.resize()?;
+        self.post_process.resize(&self.swapchain);
+        Ok(())
     }
 
     pub fn extract_instances(
@@ -732,6 +749,7 @@ impl Renderer {
 
             if self.swapchain.is_dirty {
                 self.swapchain.resize()?;
+                self.post_process.resize(&self.swapchain);
                 self.swapchain.is_dirty = false;
                 return Ok(());
             }
@@ -834,7 +852,7 @@ impl Renderer {
                 vk::Rect2D::default().extent(extent),
                 self.swapchain.main_framebuffer,
                 self.swapchain.main_render_pass,
-                None, 
+                None,
                 vk::AttachmentLoadOp::CLEAR,
             );
 
@@ -878,6 +896,54 @@ impl Renderer {
                     .device
                     .cmd_end_render_pass(frame.command_buffer);
             }
+            let z = self.gpu_profiler.begin_zone(
+                &self.context.device,
+                frame.command_buffer,
+                frame_index,
+                tracy_client::span_location!("post_process"),
+            );
+            self.context.transition_image_layout(
+                frame.command_buffer,
+                self.swapchain.msaa_draw_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::ImageAspectFlags::COLOR,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags::SHADER_READ,
+            );
+            self.context.transition_image_layout(
+                frame.command_buffer,
+                self.swapchain.resolve_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::GENERAL,
+                vk::ImageAspectFlags::COLOR,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags::SHADER_WRITE,
+            );
+            self.post_process.record_commands(&frame, &self.swapchain);
+            self.gpu_profiler
+                .end_zone(&self.context.device, frame.command_buffer, frame_index, z);
+            self.context.transition_image_layout(
+                frame.command_buffer,
+                self.swapchain.resolve_image.image,
+                0,
+                vk::REMAINING_MIP_LEVELS,
+                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageAspectFlags::COLOR,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            );
 
             let z = self.gpu_profiler.begin_zone(
                 &self.context.device,
@@ -961,7 +1027,7 @@ impl Renderer {
                         &[vk::SubmitInfo2::default()
                             .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
                                 .semaphore(frame.image_available_semaphore)
-                                .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT_KHR)])
+                                .stage_mask(vk::PipelineStageFlags2::TRANSFER)])
                             .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
                                 .semaphore(render_finished_semaphore)
                                 .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])
